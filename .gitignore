@@ -1,0 +1,9 @@
+bin/
+obj/
+Library/
+node_modules/
+UI/build/
+*.user
+*.log
+DISPATCH.md
+tools/uitest/*.png

@@ -1,0 +1,43 @@
+<Publish>
+	<!--Id must be set in order to update existed mod. it is not required for publishing mod for the first time-->
+	<ModId Value="150546" />
+	<!--Name of the mod to display to players-->
+	<DisplayName Value="TransitTimetables" />
+	<!--Short description of the mod-->
+	<ShortDescription Value="Real timetables for public transport — fixed departures, auto-sized fleets and terminus timing points. Works for buses, trams, trains, metros, ferries and planes." />
+	<!--Long description of the mod. Single line or multi line. Supports minimal markdown subset-->
+	<LongDescription>
+Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
+
+Per line you opt in and set:
+- a first departure time and peak / off-peak / night intervals (the peak windows are configurable),
+- the mod then DERIVES how many vehicles the line needs to hold that headway, and raises the game's vehicle-count ceiling so the derived fleet is never clamped,
+- a terminus stop (timing point) where early vehicles are held to the scheduled departure, and where surplus vehicles retire — after finishing their loop and dropping passengers, not mid-route.
+
+Select any stop to open a printed-timetable departure board for every line that serves it, listed from the first departure of the day. Day-only and night-only lines only show and run the intervals that apply to them, and a night line is scheduled inside the night window.
+
+No timetable set = the line runs exactly like vanilla. Everything is controlled from the line's own info panel plus a floating departures board.
+	</LongDescription>
+	<!--Thumbnail-->
+	<Thumbnail Value="Properties/Thumbnail.png" />
+	<!--Screenshot, can be set multiple times-->
+	<Screenshot Value="" />
+	<!--Tag, can be set multiple times-->
+	<Tag Value="" />
+	<!--Link to the forum post where the mod can be discussed-->
+	<ForumLink Value="" />
+	<!--Version of the mod-->
+	<ModVersion Value="0.1" />
+	<!--Recommended version of the base game to use the mod-->
+	<GameVersion Value="1.6.*" />
+	<!--Dependency for the mod, can be set multiple times-->
+	<Dependency Id="" />
+	<!--Required DLC, can be set multiple times. Supported values are "Landmark Buildings", "San Fransisco Set", "Beach Properties", "Urban Promenades", "Modern Architecture"-->
+	<RequiredDLC Value="" />
+	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
+	<ChangeLog Value="Initial public release." />
+	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
+	<ExternalLink Type="" Url="" />
+	<!--Supported values Public, Private, Unlisted-->
+	<AccessLevel Value="Public" />
+</Publish>
