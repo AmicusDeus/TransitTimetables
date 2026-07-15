@@ -3,8 +3,7 @@ using Unity.Entities;
 
 namespace TransitTimetables
 {
-    // T2 per-line fixed-departure timetable. Separate component from TimetableLine so adding it doesn't change the
-    // TimetableLine save format (existing saves stay compatible). Added to a line when the player opts it in.
+    // T2 per-line fixed-departure timetable. Added to a line when the player opts it in.
     //
     //   m_Enabled          — this line runs a fixed timetable (departs the terminus at clock times, holds if early,
     //                        goes immediately if on-time/late). Overrides the hourly % model for this line.

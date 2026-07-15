@@ -219,7 +219,24 @@ export const TransitPanelHost = () => {
         }
     }, [auto]);
 
-    if (!open) return null;
+    if (!open) {
+        // Closed but a stop is still selected: keep a slim reopen bar. Re-clicking the SAME stop can't reopen the
+        // panel (the game fires no reselect event for an already-selected entity), so offer this affordance instead.
+        if (!stopHas) return null;
+        return (
+            <div
+                onClick={() => setOpen(true)}
+                style={{
+                    position: "fixed", top: "90rem", right: "56rem", zIndex: 99999, pointerEvents: "auto",
+                    cursor: "pointer", background: "rgba(13, 21, 33, 0.97)", borderRadius: "6rem",
+                    padding: "8rem 12rem", color: "white", fontSize: "var(--fontSizeM)", fontWeight: "bold",
+                    textTransform: "uppercase", boxShadow: "0 4rem 24rem rgba(0,0,0,0.5)",
+                } as any}
+            >
+                {t("panelTitle", "DEPARTURES")} ▸
+            </div>
+        );
+    }
     return (
         <div
             style={{

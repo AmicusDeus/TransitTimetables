@@ -31,7 +31,7 @@ Made with Claude Code, Anthropic's agentic coding tool.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.1" />
+	<ModVersion Value="0.2" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -39,7 +39,19 @@ Made with Claude Code, Anthropic's agentic coding tool.
 	<!--Required DLC, can be set multiple times. Supported values are "Landmark Buildings", "San Fransisco Set", "Beach Properties", "Urban Promenades", "Modern Architecture"-->
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
-	<ChangeLog Value="Added an open-source GitHub link and a 'Made with Claude Code' note to the description." />
+	<ChangeLog>
+v0.2 — bug-fix release
+
+- Fixed: buses left downstream stops about a minute before their posted time (the dwell at intermediate stops wasn't counted in the schedule).
+- Fixed: a timetabled line could hold or delay buses belonging to OTHER lines at shared stops.
+- Fixed: turning a line's timetable off now returns it to automatic vehicle count instead of leaving it stuck at the timetabled fleet, and immediately releases any bus being held at a stop.
+- Fixed: the vehicle-count ceiling no longer stays raised after all timetabled lines are removed, or when loading a different save in the same session.
+- Fixed: an on-time departure no longer leaves behind a passenger who is still boarding.
+- Fixed: the daily schedule no longer drifts a few minutes late for intervals that don't divide evenly into the day.
+- Fixed: a line outside its operating window (or with a misconfigured night window) now runs normally instead of dispatching every bus immediately.
+- Fixed: the departures board can be reopened from a slim bar after you close it while a stop is still selected.
+- Internal: fixed a slow memory leak from lines deleted while timetabled, and removed unused code.
+	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
 	<!--Supported values Public, Private, Unlisted-->

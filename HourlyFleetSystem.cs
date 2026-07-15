@@ -106,6 +106,22 @@ namespace TransitTimetables
             return false;
         }
 
+        // Deactivate a mod-applied vehicle-count policy so the line reverts to vanilla's automatic vehicle count —
+        // used when a timetable is switched off. Without it the line stays pinned at the last derived count, and that
+        // override is serialized into the save with no timetable left to explain it. (A previously player-set manual
+        // count on the same line is also cleared to automatic; re-pin it via the vanilla slider if wanted.)
+        public bool TryClearLineFleet(Entity line)
+        {
+            if (m_VehicleCountPolicy == Entity.Null)
+            {
+                ResolvePolicy();
+                if (m_VehicleCountPolicy == Entity.Null)
+                    return false;
+            }
+            m_Policies.SetPolicy(line, m_VehicleCountPolicy, active: false);
+            return true;
+        }
+
         // Stable line duration = sum of segment path durations + stop dwell per timed stop. Mirrors
         // VehicleCountSection.CalculateVehicleCountJob.CalculateStableDuration so our count math matches the game's.
         private float ComputeStableDuration(Entity line, TransportLineData tld)

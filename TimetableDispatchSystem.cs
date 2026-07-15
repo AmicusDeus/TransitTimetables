@@ -36,6 +36,10 @@ namespace TransitTimetables
         // a full loop and may now retire on their next return. A freshly-deployed bus is absent from this set until
         // it leaves the terminus, so it always completes one serving lap before it can be recalled.
         private readonly Dictionary<Entity, HashSet<Entity>> m_LapServed = new Dictionary<Entity, HashSet<Entity>>();
+        // Reused scratch for pruning the above dicts against the live query (a line bulldozed while enabled leaves the
+        // query without hitting the disable branch, so its keys would otherwise leak). Members = no per-update alloc.
+        private readonly HashSet<Entity> m_LiveScratch = new HashSet<Entity>();
+        private readonly List<Entity> m_StaleScratch = new List<Entity>();
         private uint m_LastLog;
 
         // Read by VehicleLimitSystem to auto-uncap the vehicle ceiling while any line is timetabled.
@@ -44,6 +48,9 @@ namespace TransitTimetables
         protected override void OnCreate()
         {
             base.OnCreate();
+            // TimetableInUse is a static read by VehicleLimitSystem; reset it on every system-creation (i.e. per world /
+            // save load) so a stale "true" left over from a previous session can't keep the global vehicle cap uncapped.
+            TimetableInUse = false;
             m_Sim = World.GetOrCreateSystemManaged<SimulationSystem>();
             m_Time = World.GetOrCreateSystemManaged<TimeSystem>();
             m_Fleet = World.GetOrCreateSystemManaged<HourlyFleetSystem>();
@@ -59,7 +66,10 @@ namespace TransitTimetables
                 },
                 None = new[] { ComponentType.ReadOnly<Deleted>(), ComponentType.ReadOnly<Game.Tools.Temp>() },
             });
-            RequireForUpdate(m_LineQuery);
+            // Intentionally NOT RequireForUpdate(m_LineQuery): OnUpdate must keep ticking when the query EMPTIES (the
+            // last timetabled line was deleted) so it can set TimetableInUse=false and let VehicleLimitSystem restore
+            // the global vehicle cap. With RequireForUpdate the system stops on an empty query, latching the 8x uncap
+            // on forever (and bleeding it into the next save loaded this session). The empty-query loop is trivial.
         }
 
         public override int GetUpdateInterval(SystemUpdatePhase phase) => 8;
@@ -86,6 +96,16 @@ namespace TransitTimetables
                 if (!sch.m_Enabled)
                 {
                     RestoreUnbunching(line, tl);
+                    if (m_LastFleet.ContainsKey(line))
+                    {
+                        // We were managing this line — hand it back to vanilla EXACTLY ONCE (m_LastFleet is cleared
+                        // just below, so later disabled frames skip this): release any bus we were holding so it
+                        // departs immediately instead of idling to a stale scheduled frame (#8), and deactivate the
+                        // mod-applied vehicle-count policy so the fleet reverts to vanilla's automatic count rather
+                        // than staying frozen at the last derived number — which otherwise persists into the save (#4).
+                        ReleaseHeldVehicles(line, frame);
+                        m_Fleet.TryClearLineFleet(line);
+                    }
                     m_LastFleet.Remove(line);
                     m_PendingRetire.Remove(line);
                     m_LapServed.Remove(line);
@@ -120,9 +140,10 @@ namespace TransitTimetables
                 FindTerminus(line, sch, out Entity terminusStop, out Entity terminusWaypoint);
 
                 // (3a) FULL TIMETABLE: hold EACH stop's boarding bus to that stop's scheduled departure — the terminus
-                // schedule shifted by the stop's cumulative travel offset from the terminus (offset 0 at the terminus).
-                // Offsets come from the route itself: each RouteSegment's PathInformation.m_Duration (60-frame route
-                // units) summed from the terminus, converted to schedule minutes via ScheduleMath.UnitMinutes.
+                // schedule shifted by the stop's cumulative offset from the terminus (offset 0 at the terminus).
+                // Offsets come from the route itself: each RouteSegment's PathInformation.m_Duration PLUS the dwell at
+                // each intermediate timed stop (60-frame route units), summed from the terminus and converted to
+                // schedule minutes via ScheduleMath.UnitMinutes — matching the UI board's TravelUnitsBetween.
                 int curInterval = ScheduleMath.IntervalFor(s, sch, nowMin, sched);
                 bool diagLog = frame - m_LastLog >= 16384; // [SelfTest] cadence — dump the hold's numbers periodically
                 HoldAllStops(line, s, sch, sched, terminusStop, terminusWaypoint, frame, nowMin, curInterval, diagLog);
@@ -233,6 +254,14 @@ namespace TransitTimetables
                 if (sample == null)
                     sample = $"line#{line.Index} sched{sched} every {ScheduleMath.IntervalFor(s, sch, nowMin, sched)}m";
             }
+
+            // Prune tracking entries for lines that left the query (e.g. bulldozed while enabled) so they don't leak.
+            m_LiveScratch.Clear();
+            for (int i = 0; i < lines.Length; i++) m_LiveScratch.Add(lines[i]);
+            PruneToLive(m_LastFleet, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_PendingRetire, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LapServed, m_LiveScratch, m_StaleScratch);
+
             lines.Dispose();
 
             TimetableInUse = anyEnabled;
@@ -245,11 +274,17 @@ namespace TransitTimetables
         }
 
         // (3a helper) Hold every stop's boarding bus to that stop's scheduled departure. Per-stop offset = cumulative
-        // route travel time from the terminus (Σ RouteSegment.PathInformation.m_Duration, 60-frame units) -> schedule
-        // minutes. Segment i is the leg from waypoint i to waypoint i+1 (matches HourlyFleetSystem.ComputeStableDuration).
+        // route time from the terminus (Σ RouteSegment.PathInformation.m_Duration + dwell at each intermediate timed
+        // stop, 60-frame units) -> schedule minutes. Segment i is the leg from waypoint i to waypoint i+1, and the
+        // dwell term mirrors HourlyFleetSystem.ComputeStableDuration / the UI board so posted and held times agree.
         private void HoldAllStops(Entity line, Setting s, TimetableSchedule sch, int sched, Entity terminusStop,
             Entity terminusWaypoint, uint frame, int nowMin, int interval, bool diagLog)
         {
+            // Outside the line's operating window (day-only at night, night-only by day, or a degenerate EMPTY window
+            // like NightStart==NightEnd) -> don't hold or force-depart anything; let it run vanilla headway instead of
+            // silently churning every bus through the force-depart path (which is what an empty window used to do).
+            if (!ScheduleMath.InService(s, sched, nowMin))
+                return;
             if (!EntityManager.HasBuffer<RouteWaypoint>(line) || !EntityManager.HasBuffer<RouteSegment>(line))
                 return;
             DynamicBuffer<RouteWaypoint> wps = EntityManager.GetBuffer<RouteWaypoint>(line, isReadOnly: true);
@@ -257,6 +292,28 @@ namespace TransitTimetables
             int len = wps.Length;
             if (len == 0 || segs.Length < len)
                 return;
+
+            // Per-stop dwell (route units), added to each downstream stop's offset so the hold matches the departure
+            // board (TravelUnitsBetween / ComputeStableDuration both count intermediate dwell). Without it the offset
+            // was travel-only, so downstream stops departed ~1 min (one cumulative dwell) BEFORE their posted time.
+            float stopDur = 1f;
+            if (EntityManager.HasComponent<PrefabRef>(line))
+            {
+                Entity pf = EntityManager.GetComponentData<PrefabRef>(line).m_Prefab;
+                if (EntityManager.HasComponent<TransportLineData>(pf))
+                    stopDur = EntityManager.GetComponentData<TransportLineData>(pf).m_StopDuration;
+            }
+
+            // A shared physical stop exposes ONE BoardingVehicle slot regardless of line, so its boarding bus may
+            // belong to a DIFFERENT line. Build this line's own roster so HoldStop only ever holds our own buses.
+            HashSet<Entity> lineVehicles = null;
+            if (EntityManager.HasBuffer<RouteVehicle>(line))
+            {
+                DynamicBuffer<RouteVehicle> rv = EntityManager.GetBuffer<RouteVehicle>(line, isReadOnly: true);
+                lineVehicles = new HashSet<Entity>();
+                for (int i = 0; i < rv.Length; i++)
+                    if (rv[i].m_Vehicle != Entity.Null) lineVehicles.Add(rv[i].m_Vehicle);
+            }
 
             // Start accumulating at the terminus waypoint (the schedule's timing anchor); fall back to index 0.
             int start = 0;
@@ -285,7 +342,7 @@ namespace TransitTimetables
                     if (stop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(stop))
                     {
                         boarding = true;
-                        HoldStop(s, sch, sched, stop, frame, nowMin, offMin, stop == terminusStop, interval, diag);
+                        HoldStop(s, sch, sched, stop, frame, nowMin, offMin, stop == terminusStop, interval, lineVehicles, diag);
                     }
                 }
                 if (diag != null && !boarding)
@@ -295,6 +352,11 @@ namespace TransitTimetables
                 Entity seg = segs[segIdx].m_Segment;
                 if (seg != Entity.Null && EntityManager.HasComponent<PathInformation>(seg))
                     offUnits += EntityManager.GetComponentData<PathInformation>(seg).m_Duration;
+                // ...plus this stop's own dwell so DOWNSTREAM offsets match the board (which counts intermediate
+                // dwell). Intermediate timed stops only: j==0 is the terminus, and a stop's own dwell never enters
+                // its own offset. Omitting this is what made downstream stops depart a dwell-time early.
+                if (j >= 1 && EntityManager.HasComponent<VehicleTiming>(wp))
+                    offUnits += stopDur;
             }
 
             if (diag != null)
@@ -309,12 +371,15 @@ namespace TransitTimetables
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
         private void HoldStop(Setting s, TimetableSchedule sch, int sched, Entity stop, uint frame, int nowMin,
-            int offMin, bool isTerminus, int interval, System.Text.StringBuilder diag)
+            int offMin, bool isTerminus, int interval, HashSet<Entity> lineVehicles, System.Text.StringBuilder diag)
         {
             string tag = isTerminus ? "T" : "";
             Entity veh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
             if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
             { diag?.Append(" [off").Append(offMin).Append(tag).Append(":noveh]"); return; }
+            // The boarding slot at a shared stop can hold ANOTHER line's bus — never write its departure frame.
+            if (lineVehicles != null && !lineVehicles.Contains(veh))
+            { diag?.Append(" [off").Append(offMin).Append(tag).Append(":foreign]"); return; }
             PublicTransport pt = EntityManager.GetComponentData<PublicTransport>(veh);
             // Only hold an IN-SERVICE boarding bus; a retiring one has EnRoute cleared and must reach the depot.
             bool isBoarding = (pt.m_State & PublicTransportFlags.Boarding) != 0;
@@ -333,11 +398,51 @@ namespace TransitTimetables
             }
             else
             {
-                // AT/PAST schedule (or a late bus at an intermediate stop): leave NOW with whoever boarded. Push
-                // m_DepartureFrame >=1800 frames into the past so vanilla StopBoarding force-departs (departure = cutoff).
-                uint force = frame > 1800u ? frame - 1800u : 1u;
+                // AT/PAST schedule (or a late bus at an intermediate stop): release NOW, but gracefully. Put
+                // m_DepartureFrame ONE frame in the past so vanilla's boarding gate opens (frame >= m_DepartureFrame)
+                // and the bus leaves as soon as normal boarding completes — WITHOUT the old frame-1800 offset, which
+                // tripped StopBoarding's 1800-frame cutoff (flag2) and departed over a cim still walking up to board (#7).
+                uint force = frame > 1u ? frame - 1u : 1u;
                 if (pt.m_DepartureFrame > force) { pt.m_DepartureFrame = force; EntityManager.SetComponentData(veh, pt); }
             }
+        }
+
+        // Release any bus this line was holding (future m_DepartureFrame) so it departs immediately once the timetable
+        // is switched off, instead of idling at the platform until the stale scheduled frame arrives (#8). Graceful:
+        // one frame in the past (not a hard cutoff), so vanilla finishes normal boarding before departing.
+        private void ReleaseHeldVehicles(Entity line, uint frame)
+        {
+            if (!EntityManager.HasBuffer<RouteVehicle>(line))
+                return;
+            DynamicBuffer<RouteVehicle> vehicles = EntityManager.GetBuffer<RouteVehicle>(line, isReadOnly: true);
+            uint past = frame > 1u ? frame - 1u : 1u;
+            for (int v = 0; v < vehicles.Length; v++)
+            {
+                Entity veh = vehicles[v].m_Vehicle;
+                if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
+                    continue;
+                PublicTransport pt = EntityManager.GetComponentData<PublicTransport>(veh);
+                bool boarding = (pt.m_State & PublicTransportFlags.Boarding) != 0;
+                bool enroute = (pt.m_State & PublicTransportFlags.EnRoute) != 0;
+                if (boarding && enroute && pt.m_DepartureFrame > past) // only lower an active future hold
+                {
+                    pt.m_DepartureFrame = past;
+                    EntityManager.SetComponentData(veh, pt);
+                }
+            }
+        }
+
+        // Drop dictionary entries whose line is no longer in the live query (deleted while enabled). Reuses `scratch`
+        // to gather stale keys so removal doesn't mutate the dictionary mid-enumeration.
+        private static void PruneToLive<T>(Dictionary<Entity, T> dict, HashSet<Entity> live, List<Entity> scratch)
+        {
+            if (dict.Count == 0)
+                return;
+            scratch.Clear();
+            foreach (Entity key in dict.Keys)
+                if (!live.Contains(key)) scratch.Add(key);
+            for (int i = 0; i < scratch.Count; i++)
+                dict.Remove(scratch[i]);
         }
 
         // Resolve the line's terminus stop and its waypoint: the player-chosen stop if set and valid, otherwise the

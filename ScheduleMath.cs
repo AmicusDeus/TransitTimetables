@@ -58,8 +58,11 @@ namespace TransitTimetables
             for (int day = -1; day <= 1; day++)
             {
                 int t = first + day * 1440;
+                int dayEnd = t + 1440; // keep each day's progression ANCHORED at `first`: don't let it step across the
+                                       // midnight boundary onto a different residue when the interval doesn't divide
+                                       // 1440 — that drifted the whole day's schedule off the set first-departure.
                 int guard = 0;
-                while (guard < 4000)
+                while (guard < 4000 && t < dayEnd)
                 {
                     int minute = Mod1440(t);
                     if (!InService(s, schedule, minute)) break; // left the operating window -> this block is done
