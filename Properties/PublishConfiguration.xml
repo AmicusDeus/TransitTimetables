@@ -20,7 +20,7 @@ No timetable set = the line runs exactly like vanilla. Everything is controlled 
 
 Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
 
-Made with Claude Code, Anthropic's agentic coding tool.
+Made with Claude Code's Opus 4.8 and Fable 5 models.
 	</LongDescription>
 	<!--Thumbnail-->
 	<Thumbnail Value="Properties/Thumbnail.png" />
