@@ -20,6 +20,13 @@ namespace TransitTimetables
         // Peak windows (hour of day, 0-23). A line's per-window timetable intervals switch by these: hours inside a
         // morning or evening window are "peak", night hours are "night", everything else is "off-peak". The night
         // window may wrap past midnight (start > end).
+        //
+        // The NIGHT window defaults to vanilla's own transport night, 22:00-06:00 (TransportLineSystem hardcodes
+        // isNight = normalizedTime < 0.25f || normalizedTime >= 11f/12f). Matching it matters: for a day-only or
+        // night-only line VANILLA decides whether the line runs at all — it forces the vehicle count to 0 outside its
+        // own window — so any disagreement means this mod posts departures for buses vanilla has already retired, or
+        // silently stops holding while the line is still running. Existing players keep whatever their .coc already
+        // holds (the loader overwrites these initializers), so changing this default never moves anyone's setting.
         [SettingsUISlider(min = 0f, max = 23f, step = 1f, unit = "integer")]
         [SettingsUISection(Section, GroupWindows)]
         public int MorningPeakStart { get; set; } = 6;
@@ -42,7 +49,7 @@ namespace TransitTimetables
 
         [SettingsUISlider(min = 0f, max = 23f, step = 1f, unit = "integer")]
         [SettingsUISection(Section, GroupWindows)]
-        public int NightEnd { get; set; } = 5;
+        public int NightEnd { get; set; } = 6; // 06:00 = vanilla's transport day start (RouteUtils.TRANSPORT_DAY_START_TIME 0.25f)
 
         // Raise the maximum number of vehicles allowed on a line, above the game's length/stops-derived cap. 1 =
         // untouched (pure vanilla ceiling); N = up to about N times the normal maximum per line. Also widens the
@@ -73,7 +80,7 @@ namespace TransitTimetables
             EveningPeakStart = 15;
             EveningPeakEnd = 19;
             NightStart = 22;
-            NightEnd = 5;
+            NightEnd = 6; // keep in lockstep with the initializer above (this runs on an explicit "reset to defaults")
             VehicleLimitMultiplier = 1;
             AnalyzeSharedStops = false;
         }

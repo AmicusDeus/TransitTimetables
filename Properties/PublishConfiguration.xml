@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.1" />
+	<ModVersion Value="0.2.2" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,11 +40,14 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.1 — hotfix
+v0.2.2
 
-- Fixed a serious bug on day-only and night-only lines: a vehicle that was boarding near the end of its operating window could freeze at the stop for the rest of the day (up to 16 hours), with passengers aboard. Because a stop only has one boarding space, that frozen vehicle also blocked every OTHER line serving that stop. It now departs normally instead.
+- The night window now defaults to 22:00-06:00, matching the game's own transport night. It previously defaulted to 22:00-05:00, which disagreed with the game by an hour every day: on a day-only line this mod would post departures for 05:00-06:00, an hour in which the game has already taken every vehicle off that line.
 
-This could happen roughly once a day per day-only/night-only line. Lines set to run day and night were never affected. If you have seen a vehicle sitting at a stop forever, or a stop that mysteriously backs up every evening, this was almost certainly the cause.
+Your own setting is NOT touched. This only changes the starting value for new installs — if you have played with this mod before, your night window stays exactly as you left it. If you want the fix, drag "Night end" to 6 yourself.
+
+Previously, in v0.2.1:
+- Fixed a serious bug on day-only and night-only lines: a vehicle boarding near the end of its operating window could freeze at the stop for the rest of the day (up to 16 hours), with passengers aboard — and because a stop has only one boarding space, it also blocked every OTHER line serving that stop.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
