@@ -41,6 +41,9 @@ namespace TransitTimetables
         private readonly HashSet<Entity> m_LiveScratch = new HashSet<Entity>();
         private readonly List<Entity> m_StaleScratch = new List<Entity>();
         private uint m_LastLog;
+        // Throttle for the hold-clamp warning (see HoldStop): it fires per stop per 8-frame tick, so rate-limit it to
+        // the [SelfTest] cadence — one WARN is a signal, one every 8 frames is noise.
+        private uint m_LastClampWarn;
 
         // Read by VehicleLimitSystem to auto-uncap the vehicle ceiling while any line is timetabled.
         public static bool TimetableInUse;
@@ -342,7 +345,7 @@ namespace TransitTimetables
                     if (stop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(stop))
                     {
                         boarding = true;
-                        HoldStop(s, sch, sched, stop, frame, nowMin, offMin, stop == terminusStop, interval, lineVehicles, diag);
+                        HoldStop(s, sch, sched, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, diag);
                     }
                 }
                 if (diag != null && !boarding)
@@ -364,14 +367,15 @@ namespace TransitTimetables
         }
 
         // Hold one stop's in-service boarding bus to its scheduled clock departure (the schedule shifted by offMin), or
-        // force-depart it on/after time. EVERY stop (terminus and intermediate) holds to its next scheduled slot: a bus
-        // that arrives early waits for its clock minute; one that missed its slot rides the next one — a bounded, ONE-TIME
-        // wait (until is always < one headway), after which it's on time at every later stop, so it never cascades.
+        // release it on/after time. EVERY stop (terminus and intermediate) holds to its next scheduled slot: a bus that
+        // arrives early waits for its clock minute; one that missed its slot rides the next one — a bounded, ONE-TIME
+        // wait, after which it's on time at every later stop, so it never cascades.
+        // The bound is now ENFORCED rather than assumed (see the slotInterval clamp below) — the old code trusted it.
         // The m_DepartureFrame bump is honored at all stops per TransportCarAISystem.StopBoarding (line ~1265: while
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
         private void HoldStop(Setting s, TimetableSchedule sch, int sched, Entity stop, uint frame, int nowMin,
-            int offMin, bool isTerminus, int interval, HashSet<Entity> lineVehicles, System.Text.StringBuilder diag)
+            int offMin, bool isTerminus, HashSet<Entity> lineVehicles, System.Text.StringBuilder diag)
         {
             string tag = isTerminus ? "T" : "";
             Entity veh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
@@ -388,8 +392,32 @@ namespace TransitTimetables
             { diag?.Append(" [off").Append(offMin).Append(tag).Append(":brd").Append(isBoarding ? 1 : 0).Append("/enr").Append(isEnRoute ? 1 : 0).Append(']'); return; }
             int nextDep = ScheduleMath.NextDeparture(s, sch, sched, nowMin - offMin) + offMin;
             int until = nextDep - nowMin;
-            bool hold = until > 0; // hold to this stop's next scheduled slot (terminus + travel offset), like the terminus
-            diag?.Append(" [off").Append(offMin).Append(tag).Append(":dep").Append(nextDep).Append(" until").Append(until).Append(hold ? " HOLD]" : " GO]");
+
+            // A hold must never exceed ONE HEADWAY. That was assumed but never checked, and it is FALSE at an
+            // operating-window edge: near the end of a Day-only / Night-only line's window NextDeparture finds no
+            // further in-window slot and returns TOMORROW's first departure, so `until` becomes hundreds of minutes.
+            // The old code wrote that straight into m_DepartureFrame, freezing the bus at the kerb for 6-16 hours —
+            // squatting the stop's single BoardingVehicle slot (starving every other line there) with passengers
+            // aboard. Nothing could recover it: HoldAllStops' InService gate then early-returns past the boundary so
+            // we never revisit it, and vanilla only consumes AbandonRoute at the next StartBoarding, which a bus that
+            // can never stop boarding never reaches. Clamp instead: an over-long wait means "no slot left today", so
+            // release the bus rather than freeze it.
+            // Bound by the line's LONGEST configured headway, NOT by IntervalFor(now). Any real gap between two
+            // consecutive slots equals some IntervalFor(...) value, so it can never exceed the max — which makes this
+            // impossible to false-positive, while a runaway (hundreds of minutes) is still caught easily. A per-minute
+            // bound would misfire across a block boundary: a 04:50 night slot at interval 30 schedules 05:20, but
+            // IntervalFor(05:00) is the off-peak 12, so it would release a bus 20 min before its legitimate slot.
+            int maxInterval = ScheduleMath.MaxInterval(sch, sched);
+            bool overrun = until > maxInterval;
+            bool hold = until > 0 && !overrun;
+            if (overrun && frame - m_LastClampWarn >= 16384u)
+            {
+                m_LastClampWarn = frame;
+                Mod.log.Warn($"[SelfTest] hold clamped: until={until}m exceeds max headway={maxInterval}m at off={offMin} " +
+                             $"(operating-window edge, or a schedule-math regression) — releasing the bus instead of freezing it");
+            }
+            diag?.Append(" [off").Append(offMin).Append(tag).Append(":dep").Append(nextDep).Append(" until").Append(until)
+                .Append(hold ? " HOLD]" : (overrun ? " GO-clamped]" : " GO]"));
             if (hold)
             {
                 // EARLY: hold until this stop's scheduled clock minute.

@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2" />
+	<ModVersion Value="0.2.1" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,17 +40,11 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2 — bug-fix release
+v0.2.1 — hotfix
 
-- Fixed: buses left downstream stops about a minute before their posted time (the dwell at intermediate stops wasn't counted in the schedule).
-- Fixed: a timetabled line could hold or delay buses belonging to OTHER lines at shared stops.
-- Fixed: turning a line's timetable off now returns it to automatic vehicle count instead of leaving it stuck at the timetabled fleet, and immediately releases any bus being held at a stop.
-- Fixed: the vehicle-count ceiling no longer stays raised after all timetabled lines are removed, or when loading a different save in the same session.
-- Fixed: an on-time departure no longer leaves behind a passenger who is still boarding.
-- Fixed: the daily schedule no longer drifts a few minutes late for intervals that don't divide evenly into the day.
-- Fixed: a line outside its operating window (or with a misconfigured night window) now runs normally instead of dispatching every bus immediately.
-- Fixed: the departures board can be reopened from a slim bar after you close it while a stop is still selected.
-- Internal: fixed a slow memory leak from lines deleted while timetabled, and removed unused code.
+- Fixed a serious bug on day-only and night-only lines: a vehicle that was boarding near the end of its operating window could freeze at the stop for the rest of the day (up to 16 hours), with passengers aboard. Because a stop only has one boarding space, that frozen vehicle also blocked every OTHER line serving that stop. It now departs normally instead.
+
+This could happen roughly once a day per day-only/night-only line. Lines set to run day and night were never affected. If you have seen a vehicle sitting at a stop forever, or a stop that mysteriously backs up every evening, this was almost certainly the cause.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />

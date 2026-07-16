@@ -25,6 +25,23 @@ namespace TransitTimetables
             return Pos(sch.m_OffPeakInterval);
         }
 
+        // The LONGEST headway this line can legitimately run, mirroring IntervalFor's own branches (a day-only line
+        // never uses the night interval, a night-only line uses nothing else). Any real gap between two consecutive
+        // slots equals some IntervalFor(...) value, so it is bounded by this — which makes it the safe ceiling for a
+        // hold. Deliberately NOT IntervalFor(now): the interval can CHANGE across a window boundary (a 04:50 night
+        // slot at interval 30 schedules 05:20, but IntervalFor(05:00) is the off-peak 12), so a per-minute bound would
+        // spuriously release a bus that is waiting a legitimate headway across the crossover.
+        public static int MaxInterval(TimetableSchedule sch, int schedule)
+        {
+            if (schedule == LineSchedule.Night) return Pos(sch.m_NightInterval);
+            int m = Pos(sch.m_PeakInterval);
+            int o = Pos(sch.m_OffPeakInterval);
+            if (o > m) m = o;
+            if (schedule == LineSchedule.Day) return m; // day-only never runs the night interval
+            int n = Pos(sch.m_NightInterval);
+            return n > m ? n : m;
+        }
+
         // The effective first-departure minute-of-day. A night-only line's first departure is interpreted within the
         // night window: a value outside [NightStart, NightEnd) is clamped to the night window start.
         public static int FirstDeparture(Setting s, TimetableSchedule sch, int schedule)
