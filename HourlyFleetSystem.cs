@@ -80,16 +80,18 @@ namespace TransitTimetables
             return ComputeStableDuration(line, EntityManager.GetComponentData<TransportLineData>(prefab));
         }
 
-        // Set a line's vehicle count to an absolute target via the vanilla vehicle-count policy. True if applied.
+        // Set a line's vehicle count to an absolute target by writing the line's OWN VehicleInterval modifier directly
+        // — NOT via the shared vehicle-count POLICY. TransportLineSystem derives the count from
+        // value = m_DefaultVehicleInterval then RouteUtils.ApplyModifier(VehicleInterval) (value += delta.x;
+        // value += value*delta.y). So delta.x = wanted - default makes value == wanted and the count == target,
+        // UNCAPPED and PER-LINE. This is the fix for issue #2: the mod no longer widens the shared policy's modifier
+        // RANGE (VehicleLimitSystem), which is what distorted the vanilla "Assigned Vehicles" slider on EVERY line.
+        // The buffer is type-indexed, so pad it exactly the way vanilla's RouteModifierInitializeSystem.AddModifier
+        // does. Must be re-asserted every tick by the dispatch: a line edit or route (re)creation rebuilds this buffer
+        // from the line's policies (RouteModifierInitializeSystem runs on Created / a policy Modify). True if applied.
         public bool TrySetLineFleet(Entity line, int target)
         {
-            if (m_VehicleCountPolicy == Entity.Null)
-            {
-                ResolvePolicy();
-                if (m_VehicleCountPolicy == Entity.Null)
-                    return false;
-            }
-            if (!EntityManager.HasComponent<PrefabRef>(line))
+            if (!EntityManager.HasComponent<PrefabRef>(line) || !EntityManager.HasBuffer<RouteModifier>(line))
                 return false;
             Entity prefab = EntityManager.GetComponentData<PrefabRef>(line).m_Prefab;
             if (!EntityManager.HasComponent<TransportLineData>(prefab))
@@ -98,12 +100,20 @@ namespace TransitTimetables
             float duration = ComputeStableDuration(line, tld);
             if (duration <= 1f)
                 return false;
-            if (TryCalcAdjustment(target, tld.m_DefaultVehicleInterval, duration, out float adj))
+
+            DynamicBuffer<RouteModifier> mods = EntityManager.GetBuffer<RouteModifier>(line);
+            int idx = (int)RouteModifierType.VehicleInterval;
+            while (mods.Length <= idx)
+                mods.Add(default(RouteModifier));
+            float wantX = TransportLineSystem.CalculateVehicleInterval(duration, target) - tld.m_DefaultVehicleInterval;
+            RouteModifier m = mods[idx];
+            if (m.m_Delta.x != wantX || m.m_Delta.y != 0f)
             {
-                m_Policies.SetPolicy(line, m_VehicleCountPolicy, active: true, adj);
-                return true;
+                m.m_Delta.x = wantX;
+                m.m_Delta.y = 0f;
+                mods[idx] = m;
             }
-            return false;
+            return true;
         }
 
         // Deactivate a mod-applied vehicle-count policy so the line reverts to vanilla's automatic vehicle count —
@@ -112,13 +122,23 @@ namespace TransitTimetables
         // count on the same line is also cleared to automatic; re-pin it via the vanilla slider if wanted.)
         public bool TryClearLineFleet(Entity line)
         {
-            if (m_VehicleCountPolicy == Entity.Null)
+            // Reset the line's own VehicleInterval modifier to default (delta 0) so it reverts to vanilla's automatic
+            // count immediately, and deactivate any vehicle-count policy an OLDER version of this mod may have set
+            // (so it doesn't get restored by a later re-lerp). Robust regardless of re-lerp timing.
+            if (EntityManager.HasBuffer<RouteModifier>(line))
             {
-                ResolvePolicy();
-                if (m_VehicleCountPolicy == Entity.Null)
-                    return false;
+                DynamicBuffer<RouteModifier> mods = EntityManager.GetBuffer<RouteModifier>(line);
+                int idx = (int)RouteModifierType.VehicleInterval;
+                if (mods.Length > idx)
+                {
+                    RouteModifier m = mods[idx];
+                    if (m.m_Delta.x != 0f || m.m_Delta.y != 0f) { m.m_Delta.x = 0f; m.m_Delta.y = 0f; mods[idx] = m; }
+                }
             }
-            m_Policies.SetPolicy(line, m_VehicleCountPolicy, active: false);
+            if (m_VehicleCountPolicy == Entity.Null)
+                ResolvePolicy();
+            if (m_VehicleCountPolicy != Entity.Null)
+                m_Policies.SetPolicy(line, m_VehicleCountPolicy, active: false);
             return true;
         }
 
@@ -157,32 +177,6 @@ namespace TransitTimetables
                     total += tld.m_StopDuration;
             }
             return total;
-        }
-
-        // Policy adjustment that makes the vehicle-count policy yield `targetCount` vehicles. Replicates
-        // VehicleCountSection.CalculateVehicleCountJob.CalculateAdjustmentFromVehicleCount (nested in a private
-        // struct, so uncallable). Returns false if the policy has no VehicleInterval modifier (it always does).
-        private bool TryCalcAdjustment(int targetCount, float originalInterval, float duration, out float adjustment)
-        {
-            adjustment = 0f;
-            float wanted = TransportLineSystem.CalculateVehicleInterval(duration, targetCount);
-            DynamicBuffer<RouteModifierData> modifierDatas = EntityManager.GetBuffer<RouteModifierData>(m_VehicleCountPolicy, isReadOnly: true);
-            PolicySliderData slider = EntityManager.GetComponentData<PolicySliderData>(m_VehicleCountPolicy);
-            for (int i = 0; i < modifierDatas.Length; i++)
-            {
-                RouteModifierData item = modifierDatas[i];
-                if (item.m_Type != RouteModifierType.VehicleInterval)
-                    continue;
-                RouteModifier modifier = default;
-                if (item.m_Mode == ModifierValueMode.Absolute)
-                    modifier.m_Delta.x = wanted - originalInterval;
-                else
-                    modifier.m_Delta.y = (0f - originalInterval + wanted) / originalInterval;
-                float delta = RouteModifierInitializeSystem.RouteModifierRefreshData.GetDeltaFromModifier(modifier, item);
-                adjustment = RouteModifierInitializeSystem.RouteModifierRefreshData.GetPolicyAdjustmentFromModifierDelta(item, delta, slider);
-                return true;
-            }
-            return false;
         }
 
         // Read-only: how many stops are shared by two or more lines (informational). Runs once per session.

@@ -201,15 +201,18 @@ namespace TransitTimetables
                     EntityManager.SetComponentData(line, sch);
                 }
 
-                // (1) derive + apply fleet for the current headway
+                // (1) derive + apply fleet for the current headway. Re-assert EVERY tick (not just on change): the
+                // fleet is now applied by writing the line's own VehicleInterval modifier directly (see
+                // HourlyFleetSystem.TrySetLineFleet), and that buffer is rebuilt from the line's policies whenever the
+                // line is edited or its route recreated — so a periodic re-write keeps our derived count in place.
+                // TrySetLineFleet only touches the buffer when the value actually differs, so this is cheap.
                 int desiredFleet = 0;
                 float durUnits = m_Fleet.LineStableDurationUnits(line);
                 if (durUnits > 1f)
                 {
                     int interval = ScheduleMath.IntervalFor(s, sch, nowMin, sched);
                     desiredFleet = ScheduleMath.DerivedFleet(durUnits, interval);
-                    m_LastFleet.TryGetValue(line, out int last);
-                    if (desiredFleet != last && m_Fleet.TrySetLineFleet(line, desiredFleet))
+                    if (m_Fleet.TrySetLineFleet(line, desiredFleet))
                         m_LastFleet[line] = desiredFleet;
                 }
 

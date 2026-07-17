@@ -79,9 +79,12 @@ namespace TransitTimetables
                 Mod.log.Info($"[SelfTest] vehicleLimit: policy VehicleInterval modifier mode={m_Mode} range=[{m_OrigRange.min:F3},{m_OrigRange.max:F3}]");
             }
 
+            // Only the player's explicit VehicleLimitMultiplier widens the shared vehicle-count range now. Timetabled
+            // lines NO LONGER need it — HourlyFleetSystem.TrySetLineFleet writes each line's OWN VehicleInterval
+            // modifier directly (uncapped, per-line), so we don't force the range wider when a timetable is active.
+            // That auto-widen was what distorted the vanilla "Assigned Vehicles" slider on every line (issue #2); with
+            // the multiplier at its default of 1 the range is left exactly as vanilla and the slider behaves normally.
             int m = s.VehicleLimitMultiplier;
-            // Timetabled lines derive their own fleet; auto-uncap so a derived count is never clamped by the cap.
-            if (TimetableDispatchSystem.TimetableInUse && m < 8) m = 8;
             if (m < 1) m = 1;
 
             Bounds1 r = m_OrigRange;

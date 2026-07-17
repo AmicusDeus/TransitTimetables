@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.6" />
+	<ModVersion Value="0.2.7" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,7 +40,11 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.6 — late buses no longer wait a whole cycle
+v0.2.7 — the game's vehicle slider works normally again
+
+- Fixed: on a line WITHOUT a timetable, the game's own "Assigned Vehicles" slider had become impossible to use — the handle jumped straight to the maximum or down to 1 with the slightest move. This happened whenever any line in the city had a timetable. The mod used to raise the game's shared vehicle limit to fit timetabled fleets, which distorted that slider on every line. It now sizes each timetabled line's fleet on its own, without touching the shared limit, so the slider behaves exactly like vanilla again. Timetabled lines still run as many vehicles as their schedule needs. (Thanks to hkkongou for reporting.)
+
+Previously, in v0.2.6 — late buses no longer wait a whole cycle
 
 - A vehicle that arrived at a stop just a minute or two behind its scheduled time used to wait for the NEXT departure — a full interval (up to an hour on infrequent lines). Now each vehicle carries its own scheduled run: if it's a little late, it just continues on its own schedule instead of being bumped to the next cycle. (Thanks to Bananex3000 and FutureProg for reporting.)
 - A vehicle that arrives on time or late now gets a minimum 2-minute stop to board and drop off passengers, instead of being sent off the instant it pulls in. Early vehicles still leave exactly on their scheduled minute.
