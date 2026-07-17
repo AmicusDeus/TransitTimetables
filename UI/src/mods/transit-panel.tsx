@@ -147,17 +147,22 @@ export const TimetableEditor = () => {
                     <div style={{ fontSize: "12rem", opacity: 0.7, marginBottom: "6rem" }}>
                         {t("ttNext", "next: {n}", { n: next || "—" })}
                     </div>
-                    {/* Two granularities on purpose: ±5 lands on any five-minute mark (±15 could never reach :05 or
-                        :10), while ±1h keeps big moves cheap — 00:00 -> 05:00 is 5 clicks, not 60. */}
+                    {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.
+                        ±1 matters: staggering first departures a minute apart across lines that share a stop is a real
+                        technique, and the old ±15 (then ±5) could not express it.
+                        Why not an ±1h coarse step, given this is a clock? It would make crossing hours cheaper, but the
+                        long moves it helps with barely happen: ScheduleMath.FirstDeparture already auto-clamps a
+                        night-only line's first departure to the night window start (and a day-only line's into the
+                        day), so the extremes are set for you. Real edits are 5-60 min — exactly ±10's range. */}
                     <div style={{ display: "flex", alignItems: "center", padding: "3rem 0" }}>
                         <div style={{ flex: 1, fontSize: "13rem" }}>{t("firstDeparture", "First departure")}</div>
-                        {/* Margins, not `gap`: the game's cohtml UI doesn't support flex gap. The hour buttons are
-                            separated from the ± pair so the coarse and fine controls read as two groups. */}
-                        <button style={{ ...stepBtnCoarse, marginRight: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 60))}>−1h</button>
-                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 5))}>−</button>
+                        {/* Margins, not `gap`: the game's cohtml UI has no flex gap. Coarse buttons sit slightly apart
+                            from the fine pair so the two granularities read as groups. */}
+                        <button style={{ ...stepBtnCoarse, marginRight: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 10))}>−10</button>
+                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 1))}>−</button>
                         <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem" }}>{hm(first)}</div>
-                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 5))}>+</button>
-                        <button style={{ ...stepBtnCoarse, marginLeft: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 60))}>+1h</button>
+                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 1))}>+</button>
+                        <button style={{ ...stepBtnCoarse, marginLeft: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 10))}>+10</button>
                     </div>
                     {showDay ? <IntervalRow label={t("peakInterval", "Peak")} hours={peakHrs} value$={selTtPeak$} trig="setSelTtPeak" /> : null}
                     {showDay ? <IntervalRow label={t("offPeakInterval", "Off-peak")} hours={t("otherHours", "other hours")} value$={selTtOffPeak$} trig="setSelTtOffPeak" /> : null}

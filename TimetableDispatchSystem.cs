@@ -161,6 +161,30 @@ namespace TransitTimetables
                 // The line's day/night operating schedule — which intervals apply and when it runs.
                 int sched = LineSchedule.Of(EntityManager, line);
 
+                // (2b) Keep the STORED first departure equal to the EFFECTIVE one.
+                //
+                // ScheduleMath.FirstDeparture already clamps a first departure that falls outside the line's operating
+                // window (night-only -> NightStart, day-only -> NightEnd) — but only as a RETURN VALUE. The stored
+                // field kept whatever the player set, and the panel displays the stored field, so the UI LIED: a
+                // night-only line reading "First departure 05:00" was actually running its first bus at 22:00.
+                // Writing the clamp back makes stored == effective == displayed, and gives the behaviour you'd expect:
+                // switch a line to night-only and its first departure jumps to the start of the night; switch it to
+                // day-only and it jumps to the morning. DayAndNight lines are never clamped, so they are untouched.
+                //
+                // It also gives the steppers honest bounds for free: on a day-only line "-" stops at 06:00 because
+                // 05:59 is a minute that line genuinely cannot run, and on a night-only line "+" past 05:59 comes back
+                // round to 22:00 instead of escaping into daytime.
+                //
+                // Cost, accepted deliberately: a value set while the line was DayAndNight is overwritten (not
+                // remembered) if the line is later switched to day- or night-only. It was inoperative for that line
+                // anyway. Only writes when it actually differs, so this is a one-time correction, not a per-tick write.
+                int effFirst = ScheduleMath.FirstDeparture(s, sch, sched);
+                if (effFirst != sch.m_FirstDeparture)
+                {
+                    sch.m_FirstDeparture = (ushort)effFirst; // FirstDeparture returns a minute-of-day, always 0..1439
+                    EntityManager.SetComponentData(line, sch);
+                }
+
                 // (1) derive + apply fleet for the current headway
                 int desiredFleet = 0;
                 float durUnits = m_Fleet.LineStableDurationUnits(line);

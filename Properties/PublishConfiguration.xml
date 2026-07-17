@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.4" />
+	<ModVersion Value="0.2.5" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,10 +40,13 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.4 — easier time and interval setting
+v0.2.5 — the timetable panel
 
-- First departure now steps in 5 minutes instead of 15, so you can finally set times like 06:05 or 07:25. New -1h / +1h buttons keep big changes quick, and it now wraps around midnight instead of sticking at 00:00 (so a late-night first departure is a couple of clicks down, not a trip through the whole day).
-- Each interval (peak / off-peak / night) gains -10 / +10 buttons next to the -1 / +1, so reaching something like 16 minutes takes a couple of clicks instead of sixteen.
+- Every row now adjusts the same way: -10 / -1 / value / +1 / +10. First departure lands on any exact minute (it used to jump in 15s, so 06:05 or 07:25 were impossible), and each interval gains -10 / +10 so reaching something like 16 minutes is a couple of clicks instead of sixteen. First departure also wraps around midnight instead of sticking at 00:00.
+
+- First departure now follows the line's schedule, and shows you the truth. Set a line to night and its first departure jumps to the start of the night; set it to day and it jumps to the morning. IMPORTANT: it always behaved this way internally — but the panel kept showing the old number, so a night line reading "first departure 05:00" was really running its first vehicle at 22:00. The panel now shows what is actually happening, so some of your existing lines will visibly correct themselves when you load. Lines set to run day and night are not affected.
+
+  Side benefit: the buttons now stop at the edges of a line's operating window, instead of letting you set a time that line can never run.
 
 Previously, in v0.2.3
 
