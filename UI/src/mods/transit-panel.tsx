@@ -203,6 +203,14 @@ const StopBoard = () => {
                         <div style={{ fontSize: "12rem", color: e.tt ? "rgb(120, 210, 130)" : "rgba(255,255,255,0.45)" }}>
                             {e.tt ? (e.d ? t("departs", "departs: {d}", { d: e.d }) : t("noDepartures", "no departures scheduled")) : t("notTimetabled", "not timetabled")}
                         </div>
+                        {e.tt && !e.term ? (
+                            <button
+                                onClick={() => trigger(G, "setTerminusRow", i)}
+                                style={{ marginTop: "4rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(70, 110, 170, 0.9)", pointerEvents: "auto" } as any}
+                            >
+                                {t("setTerminusThis", "Set as terminus")}
+                            </button>
+                        ) : null}
                     </div>
                 ))
             )}

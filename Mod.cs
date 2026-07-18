@@ -23,6 +23,9 @@ namespace TransitTimetables
             GameManager.instance.localizationManager.AddSource("en-US", new LocaleEn(ActiveSetting));
             AssetDatabase.global.LoadSettings(nameof(TransitTimetables), ActiveSetting, new Setting(this));
 
+            // Runtime day-length calibrator: keeps the frame<->minute math correct under slow-time mods (Time2Work).
+            // Registered FIRST so it refreshes before the dispatch/UI read it within the frame.
+            updateSystem.UpdateAt<TimebaseSystem>(SystemUpdatePhase.GameSimulation);
             // Fleet-control helper + shared-stop analysis.
             updateSystem.UpdateAt<HourlyFleetSystem>(SystemUpdatePhase.GameSimulation);
             // Fixed-departure timetabling: terminus hold, derived fleet, retire-at-terminus.
@@ -60,7 +63,11 @@ namespace TransitTimetables
                 { m_S.GetOptionTabLocaleID(Setting.Section), "Main" },
                 { m_S.GetOptionGroupLocaleID(Setting.GroupWindows), "Peak windows" },
                 { m_S.GetOptionGroupLocaleID(Setting.GroupLimit), "Vehicle limit" },
+                { m_S.GetOptionGroupLocaleID(Setting.GroupCompat), "Compatibility" },
                 { m_S.GetOptionGroupLocaleID(Setting.GroupExperimental), "Experimental" },
+
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.RealisticTripsCompat)), "Adapt to slow-time mods (Realistic Trips / Time2Work) — ALPHA" },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.RealisticTripsCompat)), "Turn this ON if you use Time2Work / \"Realistic Trips\" or any mod that makes the in-game day longer, so departures, stop times and fleet sizes stay correct instead of running early. The mod detects the real day length automatically, so leaving it on does nothing when no such mod is installed. Turn it OFF for the exact original behaviour. NOTE: this compatibility path is an ALPHA and has NOT been tested against Realistic Trips in-game yet — please report anything odd. Under Realistic Trips your lines will correctly use fewer vehicles than before." },
 
                 { m_S.GetOptionLabelLocaleID(nameof(Setting.VehicleLimitMultiplier)), "Max vehicles per line (× normal cap)" },
                 { m_S.GetOptionDescLocaleID(nameof(Setting.VehicleLimitMultiplier)), "Raises how many vehicles a line may run above the game's length/stops-based maximum. 1 = vanilla; higher values let you add more buses, trams or trains per line. Applies to the game's own vehicle-count slider too, and is raised automatically while a line runs a timetable." },

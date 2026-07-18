@@ -2,18 +2,18 @@ using System;
 
 namespace TransitTimetables
 {
-    // Pure timetable math shared by the dispatch system and the UI. Time conversions use the game's clock:
-    // 1 in-game day = 262144 sim frames (TimeSystem.kTicksPerDay), so 1 in-game minute = 182.04 frames, and the
-    // route "duration units" used by the vehicle-count math are 60-frame units (RouteUtils), i.e. ~0.33 minutes.
+    // Pure timetable math shared by the dispatch system and the UI. Everything here is day-length AGNOSTIC: all the
+    // clock/interval logic works in plain minutes-of-day. The ONE day-length-dependent conversion — route "duration
+    // units" <-> in-game minutes — is supplied at runtime by TimebaseSystem and passed in as `unitMinutes` (so this
+    // stays a pure static helper with no hidden global read). A route "duration unit" is a fixed 60 sim frames
+    // (RouteUtils); only the day length varies: vanilla = 262144 frames/day -> unitMinutes ~0.3296, and slow-time mods
+    // (Time2Work) stretch it. The dispatch/UI convert minutes<->frames with the matching TimebaseSystem.FramesPerMinute.
     //
     // Everything here is SCHEDULE-AWARE via a `schedule` argument (LineSchedule.Day/Night/DayAndNight): a night-only
     // line only ever runs the night interval inside the night window (its first departure is interpreted within that
     // window); a day-only line never uses the night interval and does not run at night.
     public static class ScheduleMath
     {
-        public const float FramesPerMinute = 262144f / 1440f;   // ~182.04
-        public const float UnitMinutes = 60f / FramesPerMinute; // ~0.3296 in-game minutes per stop-duration unit
-
         // Headway (minutes) in effect at a given minute-of-day, respecting the line's operating schedule.
         public static int IntervalFor(Setting s, TimetableSchedule sch, int minuteOfDay, int schedule)
         {
@@ -126,14 +126,15 @@ namespace TransitTimetables
             return n;
         }
 
-        // Round-trip time of one vehicle over the whole line, in in-game minutes.
-        public static float RoundTripMinutes(float stableDurationUnits) => stableDurationUnits * UnitMinutes;
+        // Round-trip time of one vehicle over the whole line, in in-game minutes. `unitMinutes` is the runtime
+        // route-unit->minute scale from TimebaseSystem (vanilla ~0.3296; smaller under a stretched day).
+        public static float RoundTripMinutes(float stableDurationUnits, float unitMinutes) => stableDurationUnits * unitMinutes;
 
         // Vehicles needed to sustain the given headway = ceil(round-trip / interval), at least 1.
-        public static int DerivedFleet(float stableDurationUnits, int intervalMinutes)
+        public static int DerivedFleet(float stableDurationUnits, int intervalMinutes, float unitMinutes)
         {
             intervalMinutes = Pos(intervalMinutes);
-            int fleet = (int)Math.Ceiling(RoundTripMinutes(stableDurationUnits) / intervalMinutes);
+            int fleet = (int)Math.Ceiling(RoundTripMinutes(stableDurationUnits, unitMinutes) / intervalMinutes);
             return fleet < 1 ? 1 : fleet;
         }
 

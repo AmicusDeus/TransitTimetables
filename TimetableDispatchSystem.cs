@@ -49,6 +49,16 @@ namespace TransitTimetables
         private SimulationSystem m_Sim;
         private TimeSystem m_Time;
         private HourlyFleetSystem m_Fleet;
+        private TimebaseSystem m_Timebase;
+        // Per-tick snapshot of the runtime frame<->minute scale (from TimebaseSystem): frames per in-game minute and
+        // in-game minutes per route "duration unit". Snapshotted once at the top of OnUpdate so all math in a tick uses
+        // one consistent value; the HoldAllStops/HoldStop helpers read these fields directly (no signature churn).
+        private float m_Fpm;
+        private float m_Um;
+        // Last day-length "regime" we saw. When TimebaseSystem's generation changes (a real day-length change, e.g. a
+        // slow-time mod toggled), the per-vehicle slots were scaled by the OLD frames/minute, so drop them and let each
+        // bus re-derive its slot against the new scale on its next terminus visit.
+        private uint m_TimebaseGen;
         private EntityQuery m_LineQuery;
         private readonly Dictionary<Entity, int> m_LastFleet = new Dictionary<Entity, int>();
         // Per line: vehicles the game flagged to retire that we're driving to the terminus before letting them go.
@@ -93,6 +103,7 @@ namespace TransitTimetables
             m_Sim = World.GetOrCreateSystemManaged<SimulationSystem>();
             m_Time = World.GetOrCreateSystemManaged<TimeSystem>();
             m_Fleet = World.GetOrCreateSystemManaged<HourlyFleetSystem>();
+            m_Timebase = World.GetOrCreateSystemManaged<TimebaseSystem>();
             m_LineQuery = GetEntityQuery(new EntityQueryDesc
             {
                 All = new[]
@@ -121,6 +132,14 @@ namespace TransitTimetables
 
             uint frame = m_Sim.frameIndex;
             int nowMin = (int)(m_Time.normalizedTime * 1440f) % 1440;
+
+            // Runtime frame<->minute scale (vanilla 262144 frames/day unless a slow-time mod stretches the day). One
+            // consistent snapshot per tick. On a real day-length change, drop the per-vehicle slots that were scaled by
+            // the previous value so each bus re-derives against the new one at its next terminus visit.
+            m_Fpm = m_Timebase.FramesPerMinute;
+            m_Um = m_Timebase.UnitMinutes;
+            uint tbGen = m_Timebase.RegimeGeneration;
+            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); }
 
             NativeArray<Entity> lines = m_LineQuery.ToEntityArray(Allocator.Temp);
             bool anyEnabled = false;
@@ -211,7 +230,7 @@ namespace TransitTimetables
                 if (durUnits > 1f)
                 {
                     int interval = ScheduleMath.IntervalFor(s, sch, nowMin, sched);
-                    desiredFleet = ScheduleMath.DerivedFleet(durUnits, interval);
+                    desiredFleet = ScheduleMath.DerivedFleet(durUnits, interval, m_Um);
                     if (m_Fleet.TrySetLineFleet(line, desiredFleet))
                         m_LastFleet[line] = desiredFleet;
                 }
@@ -223,7 +242,7 @@ namespace TransitTimetables
                 // schedule shifted by the stop's cumulative offset from the terminus (offset 0 at the terminus).
                 // Offsets come from the route itself: each RouteSegment's PathInformation.m_Duration PLUS the dwell at
                 // each intermediate timed stop (60-frame route units), summed from the terminus and converted to
-                // schedule minutes via ScheduleMath.UnitMinutes — matching the UI board's TravelUnitsBetween.
+                // schedule minutes via the runtime unit scale (m_Um) — matching the UI board's TravelUnitsBetween.
                 int curInterval = ScheduleMath.IntervalFor(s, sch, nowMin, sched);
                 bool diagLog = frame - m_LastLog >= 16384; // [SelfTest] cadence — dump the hold's numbers periodically
                 HoldAllStops(line, s, sch, sched, terminusStop, terminusWaypoint, frame, nowMin, curInterval, diagLog);
@@ -438,7 +457,7 @@ namespace TransitTimetables
             {
                 int wpIdx = start + j; if (wpIdx >= len) wpIdx -= len;
                 Entity wp = wps[wpIdx].m_Waypoint;
-                int offMin = (int)System.Math.Round(offUnits * ScheduleMath.UnitMinutes);
+                int offMin = (int)System.Math.Round(offUnits * m_Um);
                 bool boarding = false;
                 if (EntityManager.HasComponent<Connected>(wp))
                 {
@@ -513,7 +532,7 @@ namespace TransitTimetables
                     int untilNext = ScheduleMath.NextDeparture(s, sch, sched, nowMin) - nowMin; // minutes to next slot
                     if (untilNext >= 0 && untilNext <= maxInterval)
                     {
-                        slotFrame = frame + (uint)(untilNext * ScheduleMath.FramesPerMinute);
+                        slotFrame = frame + (uint)(untilNext * m_Fpm);
                         m_RunSlotFrame[veh] = slotFrame;
                         slotSrc = "asg";
                     }
@@ -531,7 +550,7 @@ namespace TransitTimetables
             else if (haveSlot)
             {
                 // Same run: this stop's scheduled departure is the terminus slot pushed forward by the stop's offset.
-                slotFrame += (uint)(offMin * ScheduleMath.FramesPerMinute);
+                slotFrame += (uint)(offMin * m_Fpm);
                 slotSrc = "run";
             }
             else
@@ -539,7 +558,7 @@ namespace TransitTimetables
                 // Downstream bus with no slot yet (spawned mid-line, or the first tick after enabling): fall back to
                 // the old next-slot-after-now guess. Self-corrects the next time this bus boards the terminus.
                 int g = ScheduleMath.NextDeparture(s, sch, sched, nowMin - offMin) + offMin - nowMin;
-                slotFrame = frame + (uint)((g > 0 ? g : 0) * ScheduleMath.FramesPerMinute);
+                slotFrame = frame + (uint)((g > 0 ? g : 0) * m_Fpm);
                 slotSrc = "guess";
             }
 
@@ -553,11 +572,11 @@ namespace TransitTimetables
             // for the first tick before the stamp lands. Dwell is capped at one headway so a sub-2-min line can't jam.
             uint arrived = m_ArrivedFrame.TryGetValue(veh, out uint af) ? af : frame;
             int dwellMin = System.Math.Min(kMinDwellMinutes, maxInterval);
-            uint target = arrived < slotFrame ? slotFrame : arrived + (uint)(dwellMin * ScheduleMath.FramesPerMinute);
+            uint target = arrived < slotFrame ? slotFrame : arrived + (uint)(dwellMin * m_Fpm);
             bool dwelling = arrived >= slotFrame; // holding for the min-dwell, not for an early slot (diagnostics only)
 
             long dframes = (long)target - frame;                                    // >0 -> hold/dwell; <=0 -> depart
-            int until = (int)System.Math.Round((double)dframes / ScheduleMath.FramesPerMinute);
+            int until = (int)System.Math.Round((double)dframes / m_Fpm);
 
             // Safety net: a hold should never exceed one headway. With per-vehicle slots this rarely fires (a bus is
             // measured against its OWN near departure, not a distant clock slot), but it still catches a window-edge

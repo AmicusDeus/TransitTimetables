@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.7" />
+	<ModVersion Value="0.2.8" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,7 +40,15 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.7 — the game's vehicle slider works normally again
+v0.2.8 — works with Realistic Trips (Time2Work), plus terminus points at stations
+
+- NEW (ALPHA): compatibility with slow-time mods like Realistic Trips / Time2Work. A new setting, "Adapt to slow-time mods" (ON by default), measures the real length of a day at runtime, so on a stretched clock your departures, stop times and vehicle counts stay correct instead of running early. With no such mod installed it changes nothing at all. IMPORTANT: this path has NOT been tested in-game against Realistic Trips yet — it's an alpha; please report anything odd. Under Realistic Trips your timetabled lines will correctly run fewer vehicles than before.
+
+- NEW: terminus points at STATIONS. You can now set a line's terminus at a train, metro, airport or harbour station — not just at roadside bus/tram stops. Clicking the station opens its departures board with every line that stops there.
+
+- NEW: a "Set as terminus" button on every line's row in the departures board. At a shared stop or a multi-platform station you can now set the terminus for any line directly, without opening each line first. The "Set as terminus for Line N" and "Set as terminus for all lines here" buttons are kept too.
+
+Previously, in v0.2.7 — the game's vehicle slider works normally again
 
 - Fixed: on a line WITHOUT a timetable, the game's own "Assigned Vehicles" slider had become impossible to use — the handle jumped straight to the maximum or down to 1 with the slightest move. This happened whenever any line in the city had a timetable. The mod used to raise the game's shared vehicle limit to fit timetabled fleets, which distorted that slider on every line. It now sizes each timetabled line's fleet on its own, without touching the shared limit, so the slider behaves exactly like vanilla again. Timetabled lines still run as many vehicles as their schedule needs. (Thanks to hkkongou for reporting.)
 

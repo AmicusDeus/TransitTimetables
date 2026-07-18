@@ -22,6 +22,7 @@ namespace TransitTimetables
 
         private TimeSystem m_TimeSystem;
         private HourlyFleetSystem m_Fleet;
+        private TimebaseSystem m_Timebase;
         private ToolSystem m_ToolSystem;
 
         // Selected LINE timetable cache.
@@ -40,6 +41,14 @@ namespace TransitTimetables
         private string m_SelStopBoard = "[]";
         private int m_AutoOpen;
         private Entity m_LastSel = Entity.Null;
+        // RESOLVED selection: the stop(s) whose lines the board shows — one for a roadside bus/tram stop; ALL platform
+        // sub-objects for a station BUILDING (train / metro / airport / harbor). Cached (keyed by the raw selection) so
+        // a selected station isn't re-walked every UI tick.
+        private readonly List<Entity> m_SelStops = new List<Entity>();
+        private Entity m_ResolveRawSel = Entity.Null;
+        // Per board ROW, the (line, stop) it represents — so each row's OWN "Set as terminus" button targets exactly that
+        // line at exactly the platform it uses here. Built in lockstep with the board JSON (row i == m_BoardRows[i]).
+        private readonly List<(Entity line, Entity stop)> m_BoardRows = new List<(Entity, Entity)>();
         private GetterValueBinding<bool> m_SelStopHasB;
         private GetterValueBinding<string> m_SelStopBoardB;
         private GetterValueBinding<int> m_AutoOpenB;
@@ -59,6 +68,7 @@ namespace TransitTimetables
             base.OnCreate();
             m_TimeSystem = World.GetOrCreateSystemManaged<TimeSystem>();
             m_Fleet = World.GetOrCreateSystemManaged<HourlyFleetSystem>();
+            m_Timebase = World.GetOrCreateSystemManaged<TimebaseSystem>();
             m_ToolSystem = World.GetOrCreateSystemManaged<ToolSystem>();
 
             m_SelHasB = new GetterValueBinding<bool>(Group, "selHas", () => m_SelHas);
@@ -101,7 +111,8 @@ namespace TransitTimetables
             AddBinding(new TriggerBinding<int>(Group, "setSelTtPeak", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_PeakInterval = (ushort)Clamp(x, 1, 240))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtOffPeak", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_OffPeakInterval = (ushort)Clamp(x, 1, 240))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtNight", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_NightInterval = (ushort)Clamp(x, 1, 240))));
-            // Two terminus scopes: every timetabled line at this stop, or only the line the player has open on the left.
+            // Terminus scopes: one board row (its own line at its own platform), the open line, or every line here.
+            AddBinding(new TriggerBinding<int>(Group, "setTerminusRow", SetTerminusRow));
             AddBinding(new TriggerBinding(Group, "setSelTerminusAll", () => SetSelectedStopAsTerminus(Entity.Null)));
             AddBinding(new TriggerBinding(Group, "setSelTerminusLine", () => { if (m_LastLine != Entity.Null) SetSelectedStopAsTerminus(m_LastLine); }));
         }
@@ -122,25 +133,37 @@ namespace TransitTimetables
             EntityManager.SetComponentData(sel, sch);
         }
 
-        // Make the selected stop the terminus. onlyLine == Entity.Null → every timetabled line that serves the stop;
-        // otherwise → just that one line (the line the player has open), provided it is timetabled and serves the stop.
+        // Make board rows their line's terminus. onlyLine == Entity.Null → every line on the board (each to the platform
+        // it uses here); otherwise → just that one line. Works off m_BoardRows, so a station's multiple platforms are
+        // each targeted correctly (each line → its own platform).
         private void SetSelectedStopAsTerminus(Entity onlyLine)
         {
-            Entity stop = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
-            if (stop == Entity.Null || !EntityManager.HasComponent<BoardingVehicle>(stop) || !EntityManager.HasBuffer<ConnectedRoute>(stop))
-                return;
-            foreach (Entity line in StopLines(stop))
+            for (int i = 0; i < m_BoardRows.Count; i++)
             {
-                if (onlyLine != Entity.Null && line != onlyLine)
+                if (onlyLine != Entity.Null && m_BoardRows[i].line != onlyLine)
                     continue;
-                if (!EntityManager.HasComponent<TimetableSchedule>(line))
-                    continue;
-                TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
-                if (sch.m_TerminusStop != stop)
-                {
-                    sch.m_TerminusStop = stop;
-                    EntityManager.SetComponentData(line, sch);
-                }
+                SetLineTerminus(m_BoardRows[i].line, m_BoardRows[i].stop);
+            }
+        }
+
+        // Set one board row's terminus (the per-row buttons). i is the JSON row index == m_BoardRows index.
+        private void SetTerminusRow(int i)
+        {
+            if (i < 0 || i >= m_BoardRows.Count)
+                return;
+            SetLineTerminus(m_BoardRows[i].line, m_BoardRows[i].stop);
+        }
+
+        // Point a timetabled line's terminus at a stop it serves. No-op if the line has no timetable or already points there.
+        private void SetLineTerminus(Entity line, Entity stop)
+        {
+            if (line == Entity.Null || stop == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
+                return;
+            TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
+            if (sch.m_TerminusStop != stop)
+            {
+                sch.m_TerminusStop = stop;
+                EntityManager.SetComponentData(line, sch);
             }
         }
 
@@ -207,7 +230,7 @@ namespace TransitTimetables
                 m_SelTtNight = sch.m_NightInterval;
                 m_SelTtInterval = ScheduleMath.IntervalFor(s, sch, nowMin, m_SelSchedule);
                 float dur = m_Fleet != null ? m_Fleet.LineStableDurationUnits(sel) : 0f;
-                m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(dur, m_SelTtInterval) : 0;
+                m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(dur, m_SelTtInterval, m_Timebase.UnitMinutes) : 0;
                 Entity term = TerminusWaypoint(sel, sch);
                 m_SelTtNext = DeparturesAtStop(sel, sch, term, term, m_SelSchedule, nowMin); // next departures from now
             }
@@ -218,44 +241,118 @@ namespace TransitTimetables
                 m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = "";
             }
 
-            // Stop selection -> departure board.
-            bool isStop = s != null && sel != Entity.Null
-                && EntityManager.HasComponent<BoardingVehicle>(sel)
-                && EntityManager.HasBuffer<ConnectedRoute>(sel);
+            // Stop selection -> departure board. A roadside bus/tram stop IS the selected entity; a train / metro /
+            // airport / harbor STATION is a building whose boarding points are platform sub-objects, so resolve the
+            // selection to the stop(s): the one roadside stop, or ALL of a station's platforms — so every line at the
+            // station is listed, each on its own row.
+            ResolveSelectedStops(s, sel);
+            bool isStop = m_SelStops.Count > 0;
             m_SelStopHas = isStop;
             if (isStop)
             {
-                m_SelStopBoard = BuildStopBoard(s, sel, nowMin);
-                // Per-line terminus context: is the last-open line timetabled AND does it serve this stop?
-                bool lastOk = m_LastLine != Entity.Null && EntityManager.Exists(m_LastLine);
-                m_SelStopLineServes = lastOk
+                m_SelStopBoard = BuildStopBoard(s, nowMin); // also (re)builds m_BoardRows in lockstep with the JSON
+                // Per-line terminus context (for "Set as terminus for Line N"): is the open line timetabled AND on the
+                // board (i.e. serves one of the resolved stops)? LineRowIndex reads the board built just above.
+                bool lastOk = m_LastLine != Entity.Null && EntityManager.Exists(m_LastLine)
                     && EntityManager.HasComponent<TimetableSchedule>(m_LastLine)
-                    && WaypointForStop(m_LastLine, sel) != Entity.Null;
+                    && LineRowIndex(m_LastLine) >= 0;
+                m_SelStopLineServes = lastOk;
                 m_SelStopLineNum = lastOk && EntityManager.HasComponent<RouteNumber>(m_LastLine)
                     ? EntityManager.GetComponentData<RouteNumber>(m_LastLine).m_Number : 0;
             }
             else
             {
                 m_SelStopBoard = "[]";
+                m_BoardRows.Clear();
                 m_SelStopLineServes = false;
                 m_SelStopLineNum = 0;
             }
 
-            // Auto-open the floating panel the first tick a (line-bearing) stop becomes the selection.
-            if (isStop && sel != m_LastSel)
+            // Auto-open the floating panel the first tick a stop (or a station resolving to one) becomes the selection.
+            Entity primary = m_SelStops.Count > 0 ? m_SelStops[0] : Entity.Null;
+            if (isStop && primary != m_LastSel)
                 m_AutoOpen++;
-            m_LastSel = sel;
+            m_LastSel = primary;
+        }
+
+        // A stop the mod can act on: has both a boarding slot and a connected-routes buffer (a roadside stop, or a
+        // station platform). Same test the departure board / terminus logic relies on.
+        private bool IsStopEntity(Entity e)
+            => e != Entity.Null
+               && EntityManager.HasComponent<BoardingVehicle>(e)
+               && EntityManager.HasBuffer<ConnectedRoute>(e);
+
+        // Resolve a tool selection into m_SelStops — the stop(s) the mod acts on. A roadside bus/tram stop IS the stop
+        // (one entry). A train / metro / airport / harbor STATION is a building whose boarding points are platform
+        // sub-objects, so collect ALL of them (the same graph vanilla walks in BuildingUtils.GetNumberOfConnectedLines)
+        // so every line at the station is listed. Cached by the raw selection so a station isn't re-walked every UI tick.
+        private void ResolveSelectedStops(Setting s, Entity sel)
+        {
+            if (s == null || sel == Entity.Null)
+            {
+                m_SelStops.Clear();
+                m_ResolveRawSel = Entity.Null;
+                return;
+            }
+            if (sel == m_ResolveRawSel)
+                return; // cached — m_SelStops already holds this selection's stops
+            m_ResolveRawSel = sel;
+            m_SelStops.Clear();
+            if (IsStopEntity(sel))
+                m_SelStops.Add(sel);
+            else
+                CollectAllStationStops(sel, 0);
+        }
+
+        // Depth-bounded descent of a building's sub-object graph, adding every platform stop to m_SelStops (deduped).
+        // Recurses into every sub-object, matching vanilla's connected-line walk. The depth cap is pure defense; real
+        // station nesting is 2-3 levels.
+        private void CollectAllStationStops(Entity root, int depth)
+        {
+            if (depth > 5)
+                return;
+            if (IsStopEntity(root) && !m_SelStops.Contains(root))
+                m_SelStops.Add(root);
+            if (!EntityManager.HasBuffer<Game.Objects.SubObject>(root))
+                return;
+            DynamicBuffer<Game.Objects.SubObject> subs = EntityManager.GetBuffer<Game.Objects.SubObject>(root, isReadOnly: true);
+            for (int i = 0; i < subs.Length; i++)
+                CollectAllStationStops(subs[i].m_SubObject, depth + 1);
         }
 
         // JSON: [{ "n": <lineNumber>, "tt": <bool>, "term": <bool>, "d": "<HH:MM, HH:MM, ...>" }, ...]
         // term = this stop is the line's EFFECTIVE terminus (explicit m_TerminusStop, else the first-stop fallback
         // that the dispatch system actually holds/retires at) — matches TerminusWaypoint below.
-        private string BuildStopBoard(Setting s, Entity stop, int nowMin)
+        private string BuildStopBoard(Setting s, int nowMin)
         {
-            var sb = new StringBuilder("[");
-            bool first = true;
-            foreach (Entity line in StopLines(stop))
+            // One row per DISTINCT line across all resolved stops (a station's platforms); the first stop a line is
+            // found on wins. m_BoardRows is kept in lockstep with the JSON (row i == m_BoardRows[i]) so each row's own
+            // "Set as terminus" button (setTerminusRow) targets that line at the platform it uses here.
+            m_BoardRows.Clear();
+            var seenLines = new HashSet<Entity>();
+            for (int si = 0; si < m_SelStops.Count; si++)
             {
+                Entity stop = m_SelStops[si];
+                foreach (Entity line in StopLines(stop))
+                    if (seenLines.Add(line))
+                        m_BoardRows.Add((line, stop));
+            }
+            // Float the currently-open line to the top of the list.
+            if (m_LastLine != Entity.Null)
+            {
+                int oi = LineRowIndex(m_LastLine);
+                if (oi > 0)
+                {
+                    var row = m_BoardRows[oi];
+                    m_BoardRows.RemoveAt(oi);
+                    m_BoardRows.Insert(0, row);
+                }
+            }
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < m_BoardRows.Count; i++)
+            {
+                Entity line = m_BoardRows[i].line;
+                Entity stop = m_BoardRows[i].stop;
                 int number = EntityManager.HasComponent<RouteNumber>(line) ? EntityManager.GetComponentData<RouteNumber>(line).m_Number : line.Index;
                 bool hasSched = EntityManager.HasComponent<TimetableSchedule>(line);
                 TimetableSchedule sch = hasSched ? EntityManager.GetComponentData<TimetableSchedule>(line) : default;
@@ -265,21 +362,38 @@ namespace TransitTimetables
                 if (tt)
                 {
                     Entity terminusWp = TerminusWaypoint(line, sch);
-                    Entity stopWp = WaypointForStop(line, stop);
-                    dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin);
-                    // Badge the EFFECTIVE terminus (explicit or first-stop fallback), i.e. the stop TerminusWaypoint
-                    // resolves to — so the star lands where the dispatch system actually holds/retires vehicles.
+                    // The stop this line EFFECTIVELY terminates at (explicit m_TerminusStop, else the first-boarding
+                    // waypoint) — where the dispatch actually holds/retires vehicles.
                     Entity termStop = terminusWp != Entity.Null && EntityManager.HasComponent<Connected>(terminusWp)
                         ? EntityManager.GetComponentData<Connected>(terminusWp).m_Connected : Entity.Null;
+                    // If the line already terminates at ANOTHER platform of the SAME selected station, re-anchor this
+                    // row to THAT platform. A two-direction rail/metro line uses two platforms, and sub-object order may
+                    // attach the row to the non-terminus one — which would drop the star and offer a "Set as terminus"
+                    // button that silently MOVES an already-correct anchor. Re-anchoring lands the star right, hides that
+                    // button, and shows departures from the real terminus. Keeps row i == m_BoardRows[i].
+                    if (termStop != Entity.Null && termStop != stop && m_SelStops.Contains(termStop))
+                    {
+                        stop = termStop;
+                        m_BoardRows[i] = (line, stop);
+                    }
+                    Entity stopWp = WaypointForStop(line, stop);
+                    dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin);
                     term = termStop != Entity.Null && termStop == stop;
                 }
-                if (!first) sb.Append(',');
-                first = false;
+                if (i > 0) sb.Append(',');
                 sb.Append("{\"n\":").Append(number).Append(",\"tt\":").Append(tt ? "true" : "false")
                   .Append(",\"term\":").Append(term ? "true" : "false").Append(",\"d\":\"").Append(dep).Append("\"}");
             }
             sb.Append(']');
             return sb.ToString();
+        }
+
+        // Index of a line's row in m_BoardRows (rebuilt by BuildStopBoard each tick), or -1.
+        private int LineRowIndex(Entity line)
+        {
+            for (int i = 0; i < m_BoardRows.Count; i++)
+                if (m_BoardRows[i].line == line) return i;
+            return -1;
         }
 
         // Distinct lines serving a stop (via each connected waypoint's Owner).
@@ -343,7 +457,7 @@ namespace TransitTimetables
         {
             if (terminusWp == Entity.Null || stopWp == Entity.Null)
                 return "";
-            int offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * ScheduleMath.UnitMinutes);
+            int offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes);
             // Clamp the seed so a stop whose first arrival is still ahead (offset > now, early morning) advertises the
             // real first bus rather than extrapolating yesterday's sequence backwards across midnight.
             int seed = nowMin - offset;

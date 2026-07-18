@@ -10,6 +10,7 @@ namespace TransitTimetables
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
         public const string GroupLimit = "Vehicle limit";
+        public const string GroupCompat = "Compatibility";
         public const string GroupExperimental = "Experimental";
 
         public Setting(IMod mod) : base(mod) { }
@@ -58,6 +59,13 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupLimit)]
         public int VehicleLimitMultiplier { get; set; } = 1;
 
+        // Compatibility: adapt the timetable's frame<->minute math to slow-time mods (Time2Work / "Realistic Trips")
+        // that lengthen the in-game day. Default ON. When ON it AUTO-DETECTS the real day length at runtime, so with no
+        // such mod present it measures the vanilla day and behaves identically; OFF pins it to the vanilla 262144
+        // frames/day (exact original behaviour). See TimebaseSystem.
+        [SettingsUISection(Section, GroupCompat)]
+        public bool RealisticTripsCompat { get; set; } = true;
+
         // Experimental: log a per-line stop-sharing analysis (which stops several lines share). Read-only report.
         [SettingsUISection(Section, GroupExperimental)]
         public bool AnalyzeSharedStops { get; set; } = false;
@@ -82,6 +90,7 @@ namespace TransitTimetables
             NightStart = 22;
             NightEnd = 6; // keep in lockstep with the initializer above (this runs on an explicit "reset to defaults")
             VehicleLimitMultiplier = 1;
+            RealisticTripsCompat = true;
             AnalyzeSharedStops = false;
         }
     }
