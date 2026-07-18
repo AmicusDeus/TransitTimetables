@@ -42,41 +42,13 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<ChangeLog>
 v0.2.8 — works with Realistic Trips (Time2Work), plus terminus points at stations
 
-- NEW (ALPHA): compatibility with slow-time mods like Realistic Trips / Time2Work. A new setting, "Adapt to slow-time mods" (ON by default), measures the real length of a day at runtime, so on a stretched clock your departures, stop times and vehicle counts stay correct instead of running early. With no such mod installed it changes nothing at all. IMPORTANT: this path has NOT been tested in-game against Realistic Trips yet — it's an alpha; please report anything odd. Under Realistic Trips your timetabled lines will correctly run fewer vehicles than before.
+- NEW (ALPHA): compatibility with slow-time mods like Realistic Trips / Time2Work. A new setting, "Adapt to slow-time mods" (ON by default), measures the real length of a day at runtime, so on a stretched clock your departures, stop times and vehicle counts stay correct instead of running early. With no such mod installed it changes nothing at all. IMPORTANT: this compatibility path has NOT been tested in-game against Realistic Trips yet — it is an alpha; please report anything odd. Under Realistic Trips your timetabled lines will correctly run fewer vehicles than before.
 
-- NEW: terminus points at STATIONS. You can now set a line's terminus at a train, metro, airport or harbour station — not just at roadside bus/tram stops. Clicking the station opens its departures board with every line that stops there.
+- NEW: terminus points at STATIONS. You can now set a line's terminus at a train, metro, airport or harbour station — not just roadside bus/tram stops. Clicking the station opens its departures board listing every line that stops there.
 
-- NEW: a "Set as terminus" button on every line's row in the departures board. At a shared stop or a multi-platform station you can now set the terminus for any line directly, without opening each line first. The "Set as terminus for Line N" and "Set as terminus for all lines here" buttons are kept too.
+- NEW: a "Set as terminus" button on every line's row in the departures board. At a shared stop or a multi-platform station you can set the terminus for any line directly, without opening each line first. The "Set as terminus for Line N" and "Set as terminus for all lines here" buttons are kept too.
 
-Previously, in v0.2.7 — the game's vehicle slider works normally again
-
-- Fixed: on a line WITHOUT a timetable, the game's own "Assigned Vehicles" slider had become impossible to use — the handle jumped straight to the maximum or down to 1 with the slightest move. This happened whenever any line in the city had a timetable. The mod used to raise the game's shared vehicle limit to fit timetabled fleets, which distorted that slider on every line. It now sizes each timetabled line's fleet on its own, without touching the shared limit, so the slider behaves exactly like vanilla again. Timetabled lines still run as many vehicles as their schedule needs. (Thanks to hkkongou for reporting.)
-
-Previously, in v0.2.6 — late buses no longer wait a whole cycle
-
-- A vehicle that arrived at a stop just a minute or two behind its scheduled time used to wait for the NEXT departure — a full interval (up to an hour on infrequent lines). Now each vehicle carries its own scheduled run: if it's a little late, it just continues on its own schedule instead of being bumped to the next cycle. (Thanks to Bananex3000 and FutureProg for reporting.)
-- A vehicle that arrives on time or late now gets a minimum 2-minute stop to board and drop off passengers, instead of being sent off the instant it pulls in. Early vehicles still leave exactly on their scheduled minute.
-- Fixed: the "Departures" tip stayed on screen after you clicked a transport line. It now closes. (Thanks to hkkongou for reporting.)
-
-Previously, in v0.2.5 — the timetable panel
-
-- Every row now adjusts the same way: -10 / -1 / value / +1 / +10. First departure lands on any exact minute (it used to jump in 15s, so 06:05 or 07:25 were impossible), and each interval gains -10 / +10 so reaching something like 16 minutes is a couple of clicks instead of sixteen. First departure also wraps around midnight instead of sticking at 00:00.
-
-- First departure now follows the line's schedule, and shows you the truth. Set a line to night and its first departure jumps to the start of the night; set it to day and it jumps to the morning. IMPORTANT: it always behaved this way internally — but the panel kept showing the old number, so a night line reading "first departure 05:00" was really running its first vehicle at 22:00. The panel now shows what is actually happening, so some of your existing lines will visibly correct themselves when you load. Lines set to run day and night are not affected.
-
-  Side benefit: the buttons now stop at the edges of a line's operating window, instead of letting you set a time that line can never run.
-
-Previously, in v0.2.3
-
-- Vehicles depart on their scheduled minute again. v0.2 accidentally made a timetabled vehicle wait for passengers who were still walking up, which pushed departures past their posted time. That was never the intent: a timetable should keep the line ON time and let anyone who misses it take the next departure. Reverted.
-
-- Fixed a serious hidden problem, and repaired the damage. Until now this mod switched OFF each timetabled line's vehicle "unbunching" (the behaviour that keeps vehicles evenly spaced) — and that change was written permanently into your saved city. The game has no setting for unbunching and never restores it, so uninstalling this mod would have left those lines unable to space themselves out FOREVER, with nothing to explain it and no way to fix it. The mod no longer touches that setting at all (it turned out to be unnecessary), and it now REPAIRS any line a previous version affected.
-
-  If you have used timetables before: load your city once with this version and save it, and your lines are repaired automatically.
-
-Previously:
-- v0.2.2 — the night window now defaults to 22:00-06:00 to match the game's own transport night (existing settings are untouched; drag "Night end" to 6 if you want it).
-- v0.2.1 — fixed a vehicle boarding near the end of a day-only/night-only line's window freezing at the stop for the rest of the day, blocking every other line serving that stop.
+Earlier versions: v0.2.7 fixed the vanilla "Assigned Vehicles" slider distortion; v0.2.6 stopped slightly-late buses from waiting a whole cycle and added a 2-minute minimum dwell; v0.2.5 reworked the panel steppers and made the first-departure display honest; v0.2.3 restored on-time departures and auto-repaired vehicle unbunching; v0.2.1-v0.2.2 were hotfixes.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
