@@ -22,11 +22,9 @@ namespace TransitTimetables
     {
         private PrefabSystem m_PrefabSystem;
         private PoliciesUISystem m_Policies;
-        private EntityQuery m_LineQuery;
         private EntityQuery m_ConfigQuery;
 
         private Entity m_VehicleCountPolicy = Entity.Null;
-        private bool m_Analyzed;
 
         protected override void OnCreate()
         {
@@ -34,18 +32,6 @@ namespace TransitTimetables
             m_PrefabSystem = World.GetOrCreateSystemManaged<PrefabSystem>();
             m_Policies = World.GetOrCreateSystemManaged<PoliciesUISystem>();
             m_ConfigQuery = GetEntityQuery(ComponentType.ReadOnly<UITransportConfigurationData>());
-            m_LineQuery = GetEntityQuery(new EntityQueryDesc
-            {
-                All = new[]
-                {
-                    ComponentType.ReadOnly<Route>(),
-                    ComponentType.ReadOnly<TransportLine>(),
-                    ComponentType.ReadOnly<PrefabRef>(),
-                    ComponentType.ReadOnly<RouteWaypoint>(),
-                    ComponentType.ReadOnly<RouteSegment>(),
-                },
-                None = new[] { ComponentType.ReadOnly<Deleted>(), ComponentType.ReadOnly<Game.Tools.Temp>() },
-            });
         }
 
         public override int GetUpdateInterval(SystemUpdatePhase phase) => 256;
@@ -57,7 +43,6 @@ namespace TransitTimetables
                 return;
             if (m_VehicleCountPolicy == Entity.Null)
                 ResolvePolicy();
-            MaybeAnalyze(s);
         }
 
         private void ResolvePolicy()
@@ -177,43 +162,6 @@ namespace TransitTimetables
                     total += tld.m_StopDuration;
             }
             return total;
-        }
-
-        // Read-only: how many stops are shared by two or more lines (informational). Runs once per session.
-        private void MaybeAnalyze(Setting s)
-        {
-            if (!s.AnalyzeSharedStops || m_Analyzed)
-                return;
-            m_Analyzed = true;
-
-            var stopLineCount = new Dictionary<Entity, int>();
-            NativeArray<Entity> lines = m_LineQuery.ToEntityArray(Allocator.Temp);
-            int lineCount = lines.Length;
-            for (int i = 0; i < lines.Length; i++)
-            {
-                DynamicBuffer<RouteWaypoint> waypoints = EntityManager.GetBuffer<RouteWaypoint>(lines[i], isReadOnly: true);
-                var seen = new HashSet<Entity>();
-                for (int j = 0; j < waypoints.Length; j++)
-                {
-                    Entity wp = waypoints[j].m_Waypoint;
-                    if (!EntityManager.HasComponent<Connected>(wp))
-                        continue;
-                    Entity stop = EntityManager.GetComponentData<Connected>(wp).m_Connected;
-                    if (stop == Entity.Null || !seen.Add(stop))
-                        continue;
-                    stopLineCount.TryGetValue(stop, out int c);
-                    stopLineCount[stop] = c + 1;
-                }
-            }
-            lines.Dispose();
-
-            int shared = 0, maxShare = 0;
-            foreach (var kv in stopLineCount)
-            {
-                if (kv.Value >= 2) shared++;
-                if (kv.Value > maxShare) maxShare = kv.Value;
-            }
-            Mod.log.Info($"[SelfTest] timetable: sharedStopAnalysis lines={lineCount} stops={stopLineCount.Count} sharedByTwoOrMore={shared} busiestStopLines={maxShare}");
         }
     }
 }

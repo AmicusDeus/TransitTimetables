@@ -26,9 +26,6 @@ const nightHours$ = bindValue<string>(G, "nightHours", "");
 const selStopHas$ = bindValue<boolean>(G, "selStopHas", false);
 const selStopBoard$ = bindValue<string>(G, "selStopBoard", "[]");
 const autoOpen$ = bindValue<number>(G, "autoOpen", 0);
-// "Selected line" context for the per-line terminus button (the line open on the left panel).
-const selStopLineNum$ = bindValue<number>(G, "selStopLineNum", 0);
-const selStopLineServes$ = bindValue<boolean>(G, "selStopLineServes", false);
 
 // Module-level open state for the floating stop panel.
 let _open = false;
@@ -179,12 +176,10 @@ export const TimetableEditor = () => {
 // The stop departure board — every line's next departures from the selected stop.
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
-    const lineNum = useValue(selStopLineNum$) as number;   // the line open on the left panel
-    const lineServes = useValue(selStopLineServes$) as boolean; // ...and it's timetabled + serves this stop
     const t = useT();
     let board: Array<{ n: number; tt: boolean; term: boolean; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
-    const anyTimetabled = board.some((e) => e.tt);
+    const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
         cursor: "pointer", display: "block", width: "100%", padding: "7rem 12rem", borderRadius: "4rem",
         fontSize: "13rem", color: "white", pointerEvents: "auto", textAlign: "center",
@@ -214,20 +209,17 @@ const StopBoard = () => {
                     </div>
                 ))
             )}
-            {anyTimetabled && (
+            {ttCount > 0 && (
                 <div style={{ padding: "10rem 14rem 2rem" }}>
-                    {lineServes ? (
-                        <button onClick={() => trigger(G, "setSelTerminusLine")} style={{ ...termBtn, background: "rgba(70, 110, 170, 0.95)" } as any}>
-                            {t("setTerminusLine", "Set as terminus for Line {n}", { n: lineNum })}
+                    {ttCount >= 2 ? (
+                        <button
+                            onClick={() => trigger(G, "setSelTerminusAll")}
+                            style={{ ...termBtn, background: "rgba(90, 100, 115, 0.9)" } as any}
+                        >
+                            {t("setTerminusAll", "Set as terminus for all lines here")}
                         </button>
                     ) : null}
-                    <button
-                        onClick={() => trigger(G, "setSelTerminusAll")}
-                        style={{ ...termBtn, marginTop: lineServes ? "6rem" : "0", background: "rgba(90, 100, 115, 0.9)" } as any}
-                    >
-                        {t("setTerminusAll", "Set as terminus for all lines here")}
-                    </button>
-                    <div style={{ fontSize: "11rem", opacity: 0.45, marginTop: "4rem" }}>
+                    <div style={{ fontSize: "11rem", opacity: 0.45, marginTop: ttCount >= 2 ? "6rem" : "0" }}>
                         {t("setTerminusHint", "The terminus anchors the schedule and the vehicle hold; buses retire here.")}
                     </div>
                 </div>

@@ -46,7 +46,9 @@ v0.2.8 — works with Realistic Trips (Time2Work), plus terminus points at stati
 
 - NEW: terminus points at STATIONS. You can now set a line's terminus at a train, metro, airport or harbour station — not just roadside bus/tram stops. Clicking the station opens its departures board listing every line that stops there.
 
-- NEW: a "Set as terminus" button on every line's row in the departures board. At a shared stop or a multi-platform station you can set the terminus for any line directly, without opening each line first. The "Set as terminus for Line N" and "Set as terminus for all lines here" buttons are kept too.
+- NEW: a "Set as terminus" button on every line's row in the departures board, so at a shared stop or a multi-platform station you can set the terminus for any line directly, without opening each line first. (A "Set as terminus for all lines here" shortcut appears when two or more lines share the stop.)
+
+- Tidied the settings page: removed "Max vehicles per line" (no longer needed — timetabled lines already run their full fleet uncapped) and the developer-only "Analyze shared stops" toggle.
 
 Earlier versions: v0.2.7 fixed the vanilla "Assigned Vehicles" slider distortion; v0.2.6 stopped slightly-late buses from waiting a whole cycle and added a 2-minute minimum dwell; v0.2.5 reworked the panel steppers and made the first-departure display honest; v0.2.3 restored on-time departures and auto-repaired vehicle unbunching; v0.2.1-v0.2.2 were hotfixes.
 	</ChangeLog>
