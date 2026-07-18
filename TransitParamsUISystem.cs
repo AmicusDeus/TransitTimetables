@@ -36,6 +36,16 @@ namespace TransitTimetables
         private GetterValueBinding<int> m_SelTtFirstB, m_SelTtPeakB, m_SelTtOffPeakB, m_SelTtNightB, m_SelTtIntervalB, m_SelTtFleetB, m_SelScheduleB;
         private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB;
 
+        // Selected LINE custom peak cache (enables fine-grained, line-specific peak hour/headway overrides).
+        private bool m_SelCustomPeakEnabled;
+        private int m_SelCustomPeakInterval;
+        private int m_SelCustomPeakStart1;
+        private int m_SelCustomPeakEnd1;
+        private int m_SelCustomPeakStart2;
+        private int m_SelCustomPeakEnd2;
+        private GetterValueBinding<bool> m_SelCustomPeakEnabledB;
+        private GetterValueBinding<int> m_SelCustomPeakIntervalB, m_SelCustomPeakStart1B, m_SelCustomPeakEnd1B, m_SelCustomPeakStart2B, m_SelCustomPeakEnd2B;
+
         // Selected STOP departure board.
         private bool m_SelStopHas;
         private string m_SelStopBoard = "[]";
@@ -83,6 +93,13 @@ namespace TransitTimetables
             m_SelScheduleB = new GetterValueBinding<int>(Group, "selSchedule", () => m_SelSchedule);
             m_PeakHoursB = new GetterValueBinding<string>(Group, "peakHours", () => m_PeakHours ?? "");
             m_NightHoursB = new GetterValueBinding<string>(Group, "nightHours", () => m_NightHours ?? "");
+            m_SelCustomPeakEnabledB = new GetterValueBinding<bool>(Group, "selCustomPeakEnabled", () => m_SelCustomPeakEnabled);
+            m_SelCustomPeakIntervalB = new GetterValueBinding<int>(Group, "selCustomPeakInterval", () => m_SelCustomPeakInterval);
+            m_SelCustomPeakStart1B = new GetterValueBinding<int>(Group, "selCustomPeakStart1", () => m_SelCustomPeakStart1);
+            m_SelCustomPeakEnd1B = new GetterValueBinding<int>(Group, "selCustomPeakEnd1", () => m_SelCustomPeakEnd1);
+            m_SelCustomPeakStart2B = new GetterValueBinding<int>(Group, "selCustomPeakStart2", () => m_SelCustomPeakStart2);
+            m_SelCustomPeakEnd2B = new GetterValueBinding<int>(Group, "selCustomPeakEnd2", () => m_SelCustomPeakEnd2);
+
             m_SelStopHasB = new GetterValueBinding<bool>(Group, "selStopHas", () => m_SelStopHas);
             m_SelStopBoardB = new GetterValueBinding<string>(Group, "selStopBoard", () => m_SelStopBoard ?? "[]");
             m_AutoOpenB = new GetterValueBinding<int>(Group, "autoOpen", () => m_AutoOpen);
@@ -100,17 +117,30 @@ namespace TransitTimetables
             AddBinding(m_SelScheduleB);
             AddBinding(m_PeakHoursB);
             AddBinding(m_NightHoursB);
+            AddBinding(m_SelCustomPeakEnabledB);
+            AddBinding(m_SelCustomPeakIntervalB);
+            AddBinding(m_SelCustomPeakStart1B);
+            AddBinding(m_SelCustomPeakEnd1B);
+            AddBinding(m_SelCustomPeakStart2B);
+            AddBinding(m_SelCustomPeakEnd2B);
             AddBinding(m_SelStopHasB);
             AddBinding(m_SelStopBoardB);
             AddBinding(m_AutoOpenB);
             AddBinding(m_SelStopLineNumB);
             AddBinding(m_SelStopLineServesB);
-
+ 
             AddBinding(new TriggerBinding<bool>(Group, "setSelTtEnabled", v => MutateSchedule(v, (ref TimetableSchedule sch, bool on) => sch.m_Enabled = on)));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtFirst", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_FirstDeparture = (ushort)Clamp(x, 0, 1439))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtPeak", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_PeakInterval = (ushort)Clamp(x, 1, 240))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtOffPeak", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_OffPeakInterval = (ushort)Clamp(x, 1, 240))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtNight", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_NightInterval = (ushort)Clamp(x, 1, 240))));
+
+            AddBinding(new TriggerBinding<bool>(Group, "setSelCustomPeakEnabled", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, bool on) => c.m_Enabled = on)));
+            AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakInterval", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_Interval = (ushort)Clamp(x, 1, 240))));
+            AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakStart1", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_Start1 = (ushort)Clamp(x, 0, 23))));
+            AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakEnd1", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_End1 = (ushort)Clamp(x, 0, 23))));
+            AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakStart2", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_Start2 = (ushort)Clamp(x, 0, 23))));
+            AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakEnd2", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_End2 = (ushort)Clamp(x, 0, 23))));
             // Terminus scopes: one board row (its own line at its own platform), the open line, or every line here.
             AddBinding(new TriggerBinding<int>(Group, "setTerminusRow", SetTerminusRow));
             AddBinding(new TriggerBinding(Group, "setSelTerminusAll", () => SetSelectedStopAsTerminus(Entity.Null)));
@@ -131,6 +161,22 @@ namespace TransitTimetables
             if (!had)
                 EntityManager.AddComponent<TimetableSchedule>(sel);
             EntityManager.SetComponentData(sel, sch);
+        }
+
+        private delegate void RefCustomPeakAction<T>(ref CustomPeakSchedule customSch, T value);
+
+        // Read-modify-write the selected line's custom peak schedule, attaching the component on first modification.
+        private void MutateCustomPeak<T>(T value, RefCustomPeakAction<T> action)
+        {
+            Entity sel = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
+            if (sel == Entity.Null || !EntityManager.HasComponent<TransportLine>(sel))
+                return;
+            bool had = EntityManager.HasComponent<CustomPeakSchedule>(sel);
+            CustomPeakSchedule customSch = had ? EntityManager.GetComponentData<CustomPeakSchedule>(sel) : CustomPeakSchedule.Default();
+            action(ref customSch, value);
+            if (!had)
+                EntityManager.AddComponent<CustomPeakSchedule>(sel);
+            EntityManager.SetComponentData(sel, customSch);
         }
 
         // Make board rows their line's terminus. onlyLine == Entity.Null → every line on the board (each to the platform
@@ -191,6 +237,12 @@ namespace TransitTimetables
             m_SelScheduleB.Update();
             m_PeakHoursB.Update();
             m_NightHoursB.Update();
+            m_SelCustomPeakEnabledB.Update();
+            m_SelCustomPeakIntervalB.Update();
+            m_SelCustomPeakStart1B.Update();
+            m_SelCustomPeakEnd1B.Update();
+            m_SelCustomPeakStart2B.Update();
+            m_SelCustomPeakEnd2B.Update();
             m_SelStopHasB.Update();
             m_SelStopBoardB.Update();
             m_AutoOpenB.Update();
@@ -223,22 +275,39 @@ namespace TransitTimetables
             if (isLine && EntityManager.HasComponent<TimetableSchedule>(sel))
             {
                 TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(sel);
+                CustomPeakSchedule customSch = EntityManager.HasComponent<CustomPeakSchedule>(sel)
+                    ? EntityManager.GetComponentData<CustomPeakSchedule>(sel)
+                    : default;
                 m_SelTtEnabled = sch.m_Enabled;
                 m_SelTtFirst = sch.m_FirstDeparture;
                 m_SelTtPeak = sch.m_PeakInterval;
                 m_SelTtOffPeak = sch.m_OffPeakInterval;
                 m_SelTtNight = sch.m_NightInterval;
-                m_SelTtInterval = ScheduleMath.IntervalFor(s, sch, nowMin, m_SelSchedule);
+                m_SelTtInterval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, m_SelSchedule);
                 float dur = m_Fleet != null ? m_Fleet.LineStableDurationUnits(sel) : 0f;
                 m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(dur, m_SelTtInterval, m_Timebase.UnitMinutes) : 0;
                 Entity term = TerminusWaypoint(sel, sch);
                 m_SelTtNext = DeparturesAtStop(sel, sch, term, term, m_SelSchedule, nowMin); // next departures from now
+
+                m_SelCustomPeakEnabled = customSch.m_Enabled;
+                m_SelCustomPeakInterval = customSch.m_Interval;
+                m_SelCustomPeakStart1 = customSch.m_Start1;
+                m_SelCustomPeakEnd1 = customSch.m_End1;
+                m_SelCustomPeakStart2 = customSch.m_Start2;
+                m_SelCustomPeakEnd2 = customSch.m_End2;
             }
             else
             {
                 m_SelTtEnabled = false;
                 m_SelTtFirst = 300; m_SelTtPeak = 8; m_SelTtOffPeak = 12; m_SelTtNight = 30;
                 m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = "";
+
+                m_SelCustomPeakEnabled = false;
+                m_SelCustomPeakInterval = 5;
+                m_SelCustomPeakStart1 = 7;
+                m_SelCustomPeakEnd1 = 9;
+                m_SelCustomPeakStart2 = 16;
+                m_SelCustomPeakEnd2 = 18;
             }
 
             // Stop selection -> departure board. A roadside bus/tram stop IS the selected entity; a train / metro /
@@ -463,7 +532,10 @@ namespace TransitTimetables
             int seed = nowMin - offset;
             if (seed < 0) seed = 0;
             int[] deps = new int[6];
-            int n = ScheduleMath.Upcoming(S, sch, schedule, seed, deps, 6);
+            CustomPeakSchedule customSch = EntityManager.HasComponent<CustomPeakSchedule>(line)
+                ? EntityManager.GetComponentData<CustomPeakSchedule>(line)
+                : default;
+            int n = ScheduleMath.Upcoming(S, sch, customSch, schedule, seed, deps, 6);
             var sb = new StringBuilder();
             for (int k = 0; k < n; k++)
             {
