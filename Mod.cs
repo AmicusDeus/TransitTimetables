@@ -32,6 +32,8 @@ namespace TransitTimetables
             updateSystem.UpdateAt<TimetableDispatchSystem>(SystemUpdatePhase.GameSimulation);
             // Line-panel editor + stop departure board bindings (floating overlay, does not pause the game).
             updateSystem.UpdateAt<TransitParamsUISystem>(SystemUpdatePhase.UIUpdate);
+            // Keep platform achievements enabled while the mod is active.
+            updateSystem.UpdateAt<AchievementEnablerSystem>(SystemUpdatePhase.GameSimulation);
 
             log.Info("[SelfTest] TransitTimetables loaded (fixed-departure timetables).");
         }
@@ -77,6 +79,10 @@ namespace TransitTimetables
                 { m_S.GetOptionDescLocaleID(nameof(Setting.NightStart)), "Hour night service begins (may wrap past midnight)." },
                 { m_S.GetOptionLabelLocaleID(nameof(Setting.NightEnd)), "Night end" },
                 { m_S.GetOptionDescLocaleID(nameof(Setting.NightEnd)), "Hour night service ends." },
+
+                { m_S.GetOptionGroupLocaleID(Setting.GroupGeneral), "General" },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.EnableAchievements)), "Keep achievements enabled" },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.EnableAchievements)), "Cities: Skylines II disables achievements whenever any mod is active. This re-enables them. Safe to leave on." },
             };
         }
 

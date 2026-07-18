@@ -10,6 +10,7 @@ namespace TransitTimetables
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
         public const string GroupCompat = "Compatibility";
+        public const string GroupGeneral = "General";
 
         public Setting(IMod mod) : base(mod) { }
 
@@ -57,6 +58,10 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupCompat)]
         public bool RealisticTripsCompat { get; set; } = true;
 
+        // Keep platform achievements enabled while this mod is active (the game otherwise disables them for any mod).
+        [SettingsUISection(Section, GroupGeneral)]
+        public bool EnableAchievements { get; set; } = true;
+
         // Which time-of-day window an hour falls in (the timetable interval switches on these).
         public bool InNightWindow(int hour) => InWindow(hour, NightStart, NightEnd);
         public bool InPeakWindow(int hour) => InWindow(hour, MorningPeakStart, MorningPeakEnd) || InWindow(hour, EveningPeakStart, EveningPeakEnd);
@@ -77,6 +82,7 @@ namespace TransitTimetables
             NightStart = 22;
             NightEnd = 6; // keep in lockstep with the initializer above (this runs on an explicit "reset to defaults")
             RealisticTripsCompat = true;
+            EnableAchievements = true;
         }
     }
 }
