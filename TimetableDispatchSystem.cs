@@ -151,6 +151,9 @@ namespace TransitTimetables
                 Entity line = lines[i];
                 TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
                 TransportLine tl = EntityManager.GetComponentData<TransportLine>(line);
+                CustomPeakSchedule customSch = EntityManager.HasComponent<CustomPeakSchedule>(line)
+                    ? EntityManager.GetComponentData<CustomPeakSchedule>(line)
+                    : default; // Query custom line-specific peak schedules if present, falling back to disabled default state.
 
                 if (!sch.m_Enabled)
                 {
@@ -229,7 +232,7 @@ namespace TransitTimetables
                 float durUnits = m_Fleet.LineStableDurationUnits(line);
                 if (durUnits > 1f)
                 {
-                    int interval = ScheduleMath.IntervalFor(s, sch, nowMin, sched);
+                    int interval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
                     desiredFleet = ScheduleMath.DerivedFleet(durUnits, interval, m_Um);
                     if (m_Fleet.TrySetLineFleet(line, desiredFleet))
                         m_LastFleet[line] = desiredFleet;
@@ -243,9 +246,9 @@ namespace TransitTimetables
                 // Offsets come from the route itself: each RouteSegment's PathInformation.m_Duration PLUS the dwell at
                 // each intermediate timed stop (60-frame route units), summed from the terminus and converted to
                 // schedule minutes via the runtime unit scale (m_Um) — matching the UI board's TravelUnitsBetween.
-                int curInterval = ScheduleMath.IntervalFor(s, sch, nowMin, sched);
+                int curInterval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
                 bool diagLog = frame - m_LastLog >= 16384; // [SelfTest] cadence — dump the hold's numbers periodically
-                HoldAllStops(line, s, sch, sched, terminusStop, terminusWaypoint, frame, nowMin, curInterval, diagLog);
+                HoldAllStops(line, s, sch, customSch, sched, terminusStop, terminusWaypoint, frame, nowMin, curInterval, diagLog);
 
                 // (3b) SLOT-COUPLED DRAIN: shed surplus buses at the terminus WITHOUT skipping departures.
                 //
@@ -367,7 +370,7 @@ namespace TransitTimetables
                 }
 
                 if (sample == null)
-                    sample = $"line#{line.Index} sched{sched} every {ScheduleMath.IntervalFor(s, sch, nowMin, sched)}m";
+                    sample = $"line#{line.Index} sched{sched} every {ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched)}m";
             }
 
             // Prune tracking entries for lines that left the query (e.g. bulldozed while enabled) so they don't leak.
@@ -395,7 +398,7 @@ namespace TransitTimetables
         // route time from the terminus (Σ RouteSegment.PathInformation.m_Duration + dwell at each intermediate timed
         // stop, 60-frame units) -> schedule minutes. Segment i is the leg from waypoint i to waypoint i+1, and the
         // dwell term mirrors HourlyFleetSystem.ComputeStableDuration / the UI board so posted and held times agree.
-        private void HoldAllStops(Entity line, Setting s, TimetableSchedule sch, int sched, Entity terminusStop,
+        private void HoldAllStops(Entity line, Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity terminusStop,
             Entity terminusWaypoint, uint frame, int nowMin, int interval, bool diagLog)
         {
             // Outside the line's operating window (day-only at night, night-only by day, or a degenerate EMPTY window
@@ -465,7 +468,7 @@ namespace TransitTimetables
                     if (stop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(stop))
                     {
                         boarding = true;
-                        HoldStop(s, sch, sched, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, lapServed, diag);
+                        HoldStop(s, sch, customSch, sched, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, lapServed, diag);
                     }
                 }
                 if (diag != null && !boarding)
@@ -494,7 +497,7 @@ namespace TransitTimetables
         // The m_DepartureFrame bump is honored at all stops per TransportCarAISystem.StopBoarding (line ~1265: while
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
-        private void HoldStop(Setting s, TimetableSchedule sch, int sched, Entity stop, uint frame, int nowMin,
+        private void HoldStop(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity stop, uint frame, int nowMin,
             int offMin, bool isTerminus, HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
         {
             string tag = isTerminus ? "T" : "";
@@ -516,7 +519,7 @@ namespace TransitTimetables
             // own slot LATE (departs immediately) instead of being bumped to the next cycle and stranded a whole
             // interval. The slot is a monotonic sim FRAME (no midnight-wrap ambiguity), recorded when the bus boards
             // the terminus and read as-is at every downstream stop of the same run.
-            int maxInterval = ScheduleMath.MaxInterval(sch, sched);
+            int maxInterval = ScheduleMath.MaxInterval(sch, customSch, sched);
             bool haveSlot = m_RunSlotFrame.TryGetValue(veh, out uint slotFrame);
             string slotSrc;
             if (isTerminus)
@@ -529,7 +532,7 @@ namespace TransitTimetables
                 bool lapped = lapServed != null && lapServed.Contains(veh);
                 if (!haveSlot || (lapped && frame >= slotFrame))
                 {
-                    int untilNext = ScheduleMath.NextDeparture(s, sch, sched, nowMin) - nowMin; // minutes to next slot
+                    int untilNext = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin) - nowMin; // minutes to next slot
                     if (untilNext >= 0 && untilNext <= maxInterval)
                     {
                         slotFrame = frame + (uint)(untilNext * m_Fpm);
@@ -557,7 +560,7 @@ namespace TransitTimetables
             {
                 // Downstream bus with no slot yet (spawned mid-line, or the first tick after enabling): fall back to
                 // the old next-slot-after-now guess. Self-corrects the next time this bus boards the terminus.
-                int g = ScheduleMath.NextDeparture(s, sch, sched, nowMin - offMin) + offMin - nowMin;
+                int g = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin - offMin) + offMin - nowMin;
                 slotFrame = frame + (uint)((g > 0 ? g : 0) * m_Fpm);
                 slotSrc = "guess";
             }

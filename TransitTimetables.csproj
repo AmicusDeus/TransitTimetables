@@ -80,6 +80,14 @@
 	        Condition="'$(NeedBuild)' == 'true' And Exists('$(MSBuildProjectDirectory)\UI\package.json')">
 		<Message Text="Building mod UI (webpack) for $(TargetName)..." Importance="high" />
 		<Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)\UI" />
+		<Copy SourceFiles="$(MSBuildProjectDirectory)\UI\mod.json" DestinationFolder="$(LocalModsPath)\$(TargetName)" SkipUnchangedFiles="true" />
+	</Target>
+
+	<!-- Override post processor args to skip compiling Burst by removing -p <platform> arguments -->
+	<Target Name="CustomModPostProcessorConfig" AfterTargets="ModPostProcessorConfig">
+		<PropertyGroup>
+			<ModPostProcessorArgs>"$(ModPostProcessorFullPath)" PostProcess "$(TargetPath)" -u "$(UnityModProjectFullPath)" @(ReferencePath->'-r "%(Identity)"', ' ') -d -v</ModPostProcessorArgs>
+		</PropertyGroup>
 	</Target>
 
 </Project>

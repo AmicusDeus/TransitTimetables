@@ -17,6 +17,14 @@ const selTtInterval$ = bindValue<number>(G, "selTtInterval", 0);
 const selTtFleet$ = bindValue<number>(G, "selTtFleet", 0);
 const selTtNext$ = bindValue<string>(G, "selTtNext", "");
 
+// Selected LINE custom peak parameters.
+const selCustomPeakEnabled$ = bindValue<boolean>(G, "selCustomPeakEnabled", false);
+const selCustomPeakInterval$ = bindValue<number>(G, "selCustomPeakInterval", 5);
+const selCustomPeakStart1$ = bindValue<number>(G, "selCustomPeakStart1", 7);
+const selCustomPeakEnd1$ = bindValue<number>(G, "selCustomPeakEnd1", 9);
+const selCustomPeakStart2$ = bindValue<number>(G, "selCustomPeakStart2", 16);
+const selCustomPeakEnd2$ = bindValue<number>(G, "selCustomPeakEnd2", 18);
+
 // Which windows apply + their hours, so the editor shows only relevant intervals and communicates the times.
 const selSchedule$ = bindValue<number>(G, "selSchedule", 2); // 0=Day, 1=Night, 2=DayAndNight
 const peakHours$ = bindValue<string>(G, "peakHours", "");
@@ -104,6 +112,27 @@ const IntervalRow = ({ label, hours, value$, trig }: { label: string; hours?: st
     );
 };
 
+// Two-point hour range selector (start to end hour) with boundary wrapping and layout sizing matching the ±10 buttons.
+const WindowRow = ({ label, start$, end$, trigStart, trigEnd }: { label: string; start$: any; end$: any; trigStart: string; trigEnd: string }) => {
+    const start = useValue(start$) as number;
+    const end = useValue(end$) as number;
+    const setStart = (nv: number) => trigger(G, trigStart, (Math.round(nv) + 24) % 24);
+    const setEnd = (nv: number) => trigger(G, trigEnd, (Math.round(nv) + 24) % 24);
+    const t = useT();
+    return (
+        <div style={{ display: "flex", alignItems: "center", padding: "3rem 0" }}>
+            <div style={{ flex: 1, fontSize: "13rem" }}>{label}</div>
+            <button style={stepBtn} onClick={() => setStart(start - 1)}>−</button>
+            <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem", whiteSpace: "nowrap" }}>{hm(start * 60)}</div>
+            <button style={stepBtn} onClick={() => setStart(start + 1)}>+</button>
+            <div style={{ fontSize: "12rem", padding: "0 6rem", opacity: 0.5 }}>{t("to", "to")}</div>
+            <button style={stepBtn} onClick={() => setEnd(end - 1)}>−</button>
+            <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem", whiteSpace: "nowrap" }}>{hm(end * 60)}</div>
+            <button style={stepBtn} onClick={() => setEnd(end + 1)}>+</button>
+        </div>
+    );
+};
+
 // The timetable editor — injected into the native line info panel. Renders nothing unless a transport line is
 // selected (self-gates on selHas, so it's inert on non-line selections and work routes).
 export const TimetableEditor = () => {
@@ -116,6 +145,7 @@ export const TimetableEditor = () => {
     const schedule = useValue(selSchedule$) as number; // 0=Day, 1=Night, 2=DayAndNight
     const peakHrs = useValue(peakHours$) as string;
     const nightHrs = useValue(nightHours$) as string;
+    const customPeakOn = useValue(selCustomPeakEnabled$);
     const t = useT();
     if (!has) return null;
     // Only show the intervals the line actually runs: day-only → Peak+Off-peak, night-only → Night, both → all.
@@ -164,7 +194,30 @@ export const TimetableEditor = () => {
                     {showDay ? <IntervalRow label={t("peakInterval", "Peak")} hours={peakHrs} value$={selTtPeak$} trig="setSelTtPeak" /> : null}
                     {showDay ? <IntervalRow label={t("offPeakInterval", "Off-peak")} hours={t("otherHours", "other hours")} value$={selTtOffPeak$} trig="setSelTtOffPeak" /> : null}
                     {showNight ? <IntervalRow label={t("nightInterval", "Night")} hours={nightHrs} value$={selTtNight$} trig="setSelTtNight" /> : null}
-                    <div style={{ fontSize: "11rem", opacity: 0.45, marginTop: "4rem" }}>
+
+                    {/* Custom Line Peak: Nested editor for configuring custom morning/evening peak headways. */}
+                    <div style={{ display: "flex", alignItems: "center", padding: "6rem 0 3rem" }}>
+                        <div style={{ flex: 1, fontSize: "13rem", fontWeight: "bold" }}>{t("customLinePeak", "Custom Line Peak")}</div>
+                        <button
+                            onClick={() => trigger(G, "setSelCustomPeakEnabled", !customPeakOn)}
+                            style={{
+                                cursor: "pointer", padding: "3rem 8rem", borderRadius: "3rem", fontSize: "11rem", color: "white",
+                                background: customPeakOn ? "rgba(60, 160, 90, 0.95)" : "rgba(120, 120, 120, 0.6)",
+                            }}
+                        >
+                            {customPeakOn ? "ON" : "OFF"}
+                        </button>
+                    </div>
+
+                    {customPeakOn && (
+                        <div style={{ borderLeft: "2rem solid rgba(255,255,255,0.15)", paddingLeft: "10rem", marginTop: "4rem" }}>
+                            <IntervalRow label={t("customPeakInterval", "Custom Peak Interval")} value$={selCustomPeakInterval$} trig="setSelCustomPeakInterval" />
+                            <WindowRow label={t("morningPeak", "Morning peak")} start$={selCustomPeakStart1$} end$={selCustomPeakEnd1$} trigStart="setSelCustomPeakStart1" trigEnd="setSelCustomPeakEnd1" />
+                            <WindowRow label={t("eveningPeak", "Evening peak")} start$={selCustomPeakStart2$} end$={selCustomPeakEnd2$} trigStart="setSelCustomPeakStart2" trigEnd="setSelCustomPeakEnd2" />
+                        </div>
+                    )}
+
+                    <div style={{ fontSize: "11rem", opacity: 0.45, marginTop: "6rem" }}>
                         {t("terminusHint", "Select a stop to see its departures and set it as this line's terminus.")}
                     </div>
                 </>
