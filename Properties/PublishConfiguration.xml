@@ -18,6 +18,14 @@ Select any stop to open a printed-timetable departure board for every line that 
 
 No timetable set = the line runs exactly like vanilla. Everything is controlled from the line's own info panel plus a floating departures board.
 
+OPTIONAL SETTINGS (all off by default — a plain timetable needs none of them):
+- "Realistic travel time" (free): the game's own loop estimate is optimistic (it ignores the time buses lose braking and accelerating at every stop), so posted times drift ahead of reality. Turn this on and the mod measures each line's REAL loop as it runs and posts realistic stop times, so early buses wait at each stop until their true departure. It warms up — for the first day or two it still shows the estimate while it measures, then switches each stop to the measured time.
+- "Provision fleet for real travel time" (costs money): also sizes each line's vehicle count to its real loop. A line whose real loop is ~2x the estimate needs about twice the vehicles to hold the same headway. Grow-only and capped.
+- "Stop at every stop (even empty ones)" (free): by default a bus skips a stop where nobody boards or alights, so that stop isn't held to schedule; the terminus is now always honoured, and this extends that to every stop. Lines run a little slower.
+- "Realistic Trips / slow-time compatibility" (ALPHA): keeps timing correct if you run a mod that lengthens the in-game day (Time2Work / Realistic Trips). Leave off otherwise.
+
+Recommended: for accurate timetables at no cost, turn on "Realistic travel time" and leave the rest off; add "Provision fleet" only if you want the mod to also buy the buses that headway really needs.
+
 Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
 
 Made with Claude Code's Opus 4.8 and Fable 5 models.
