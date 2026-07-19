@@ -31,7 +31,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.3.0" />
+	<ModVersion Value="0.3.1" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,6 +40,12 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
+v0.3.1 — Buses now always stop at the terminus (and optionally at every stop)
+
+- FIX: a bus could SKIP a stop where nobody was boarding or alighting (base-game behaviour — the bus only slows and rolls through, never pulling in). A skipped stop is never held to its scheduled departure, so the bus ran ahead of its timetable — and this could even happen at the TERMINUS, skipping the scheduled wait that anchors the whole line. Timetabled lines now ALWAYS force a stop at the terminus, so the schedule is honoured. (Reported by a community member — thank you.)
+
+- NEW: "Stop at every stop (even empty ones)" setting, OFF by default. Extends the forced stop to every stop on a timetabled line, so every posted departure is honoured — at the cost of a short dwell at each empty stop, which makes lines run a little slower. Buses and other road vehicles only; trains, trams, ships and planes already stop at every station in the base game.
+
 v0.3.0 (alpha) — Realistic travel time + per-line custom peak windows
 
 - NEW (ALPHA): "Realistic travel time". Cities: Skylines II's own estimate of how long a line takes is optimistic — it ignores the time buses lose accelerating and braking at every stop, so timetabled lines quietly run a longer effective headway than you set, and the vanilla "vehicles needed" count is too low. The mod now measures each line's REAL loop as it runs and corrects for it. Two new settings, BOTH OFF BY DEFAULT:

@@ -10,6 +10,7 @@ namespace TransitTimetables
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
         public const string GroupRealism = "Realistic travel time";
+        public const string GroupStops = "Stops";
         public const string GroupCompat = "Compatibility";
         public const string GroupGeneral = "General";
 
@@ -68,6 +69,16 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupRealism)]
         public bool ProvisionRealFleet { get; set; } = false;
 
+        // Force buses to physically STOP even when nobody is boarding or alighting. Vanilla lets a bus SKIP an empty
+        // stop — it only slows and rolls through, never pulling in — and a skipped stop is never held to its scheduled
+        // time, so the bus runs ahead of its timetable. That is worst at the TERMINUS, which anchors the whole schedule,
+        // so the terminus is now ALWAYS forced to stop (no setting for it). This toggle extends the forced stop to EVERY
+        // stop on a timetabled line: every posted time is then honoured, at the cost of a short dwell at each empty stop
+        // (lines run a little slower). OFF by default. Buses/road vehicles only — trains, trams, ships and planes already
+        // stop at every station in the base game.
+        [SettingsUISection(Section, GroupStops)]
+        public bool StopAtEveryStop { get; set; } = false;
+
         // Compatibility: adapt the timetable's frame<->minute math to slow-time mods (Time2Work / "Realistic Trips")
         // that lengthen the in-game day. Default OFF, so the base mod runs its pure vanilla-clock timing for the vast
         // majority who use no such mod. Turn it ON only under a slow-time mod: it then AUTO-DETECTS the real day length
@@ -102,6 +113,7 @@ namespace TransitTimetables
             NightEnd = 6; // keep in lockstep with the initializer above (this runs on an explicit "reset to defaults")
             RealisticTravelTime = false;
             ProvisionRealFleet = false;
+            StopAtEveryStop = false;
             RealisticTripsCompat = false;
             EnableAchievements = true;
         }

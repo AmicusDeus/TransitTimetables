@@ -282,6 +282,12 @@ namespace TransitTimetables
                 // Accumulate this line's measured loop time from terminus front-vehicle changes (feeds LineCorrection).
                 MeasureLap(line, terminusStop, frame, durUnits);
 
+                // (3-pre) FORCE STOPS: make our buses actually pull in and STOP rather than let vanilla skip a stop
+                // where nobody boards or alights — ALWAYS at the terminus (skipping it strands the whole schedule), and
+                // at every stop when the player opts in. A skipped stop never enters Boarding, so the hold below can't
+                // touch it and the bus rolls on early. See ForceStops.
+                int forcedStops = ForceStops(line, terminusWaypoint, s.StopAtEveryStop);
+
                 // (3a) FULL TIMETABLE: hold EACH stop's boarding bus to that stop's scheduled departure — the terminus
                 // schedule shifted by the stop's cumulative offset from the terminus (offset 0 at the terminus).
                 // Offsets come from the route itself: each RouteSegment's PathInformation.m_Duration PLUS the dwell at
@@ -369,7 +375,7 @@ namespace TransitTimetables
                     int surplus = desiredFleet > 0 ? liveCount - desiredFleet : 0;
 
                     if (diagLog)
-                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} surplus={surplus} slotCovered={slotCovered} pending={pending.Count}");
+                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops}");
 
                     if (surplus <= 0)
                     {
@@ -752,6 +758,57 @@ namespace TransitTimetables
                     EntityManager.SetComponentData(veh, pt);
                 }
             }
+        }
+
+        // Force our line's buses to actually STOP at a stop instead of letting vanilla skip it when nobody boards or
+        // alights. Vanilla only pulls a bus into a stop when PublicTransportFlags.RequireStop is set — raised by
+        // ResidentAISystem when a passenger wants on/off, and read in TransportCarAISystem.CheckNavigationLanes to decide
+        // skip-vs-stop. With no demand the flag stays clear and the bus rolls through, so it never enters Boarding and
+        // the timetable hold can't act on it (HoldStop early-returns unless Boarding|EnRoute) — the bus then leaves
+        // early. We simply OR the flag in ourselves:
+        //   - the TERMINUS is forced UNCONDITIONALLY (a skipped terminus strands the schedule — it is the timing anchor);
+        //   - every other stop only when `everyStop` (the player's opt-in), which trades a short dwell at empty stops for
+        //     an honoured posted time at each one.
+        // RequireStop is a TRANSIENT runtime flag: BeginTesting clears it at the start of each boarding test, then the
+        // resident AI re-sets it if there is demand (TransportBoardingHelpers). PublicTransport.m_State IS serialized, but
+        // a saved RequireStop bit self-clears at the very next BeginTesting — so forcing it is save/uninstall-safe (at
+        // worst one extra stop right after an uninstall), unlike m_UnbunchingFactor which nothing ever restores. We
+        // re-assert it every tick (this system runs every 8 frames vs the car AI's 16, so the set reliably lands between
+        // the BeginTesting clear and the skip read), and we ONLY OR it in — never clear it — so we can never suppress a
+        // stop the game genuinely wants. Scoped to THIS line's own RouteVehicles, so buses of other lines sharing a stop
+        // are untouched. (The write also lands on any non-road vehicle on the line, but it is inert there — only
+        // TransportCarAISystem reads RequireStop for the skip; trains/ships/planes never skip.) Returns count forced (diag).
+        private int ForceStops(Entity line, Entity terminusWaypoint, bool everyStop)
+        {
+            if (!EntityManager.HasBuffer<RouteVehicle>(line))
+                return 0;
+            DynamicBuffer<RouteVehicle> vehicles = EntityManager.GetBuffer<RouteVehicle>(line, isReadOnly: true);
+            int forced = 0;
+            for (int v = 0; v < vehicles.Length; v++)
+            {
+                Entity veh = vehicles[v].m_Vehicle;
+                if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
+                    continue;
+                PublicTransport pt = EntityManager.GetComponentData<PublicTransport>(veh);
+                // Only a bus that is IN SERVICE (EnRoute) and currently DRIVING (not already boarding) can skip an
+                // upcoming stop; leave depot-bound / boarding buses alone.
+                if ((pt.m_State & PublicTransportFlags.EnRoute) == 0 || (pt.m_State & PublicTransportFlags.Boarding) != 0)
+                    continue;
+                // Terminus: forced whenever this bus is heading to it (its next waypoint IS the terminus). Same
+                // Target==terminusWaypoint test the drain uses for lap-eligibility, so "waypoint" comparison is correct.
+                bool approachingTerminus = terminusWaypoint != Entity.Null
+                    && EntityManager.HasComponent<Target>(veh)
+                    && EntityManager.GetComponentData<Target>(veh).m_Target == terminusWaypoint;
+                if (!(everyStop || approachingTerminus))
+                    continue;
+                forced++;
+                if ((pt.m_State & PublicTransportFlags.RequireStop) == 0)
+                {
+                    pt.m_State |= PublicTransportFlags.RequireStop;
+                    EntityManager.SetComponentData(veh, pt);
+                }
+            }
+            return forced;
         }
 
         // Drop dictionary entries whose line is no longer in the live query (deleted while enabled). Reuses `scratch`
