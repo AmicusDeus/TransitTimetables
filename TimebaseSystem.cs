@@ -57,6 +57,9 @@ namespace TransitTimetables
         private double m_N0;
         private uint m_LastHeartbeat;
 
+        private bool m_NudgedRtOff;    // logged the "slow-time mod detected but compat is OFF" nudge once
+        private int  m_OffDetectTries; // bounded RT-detection attempts while compat is off (then give up scanning)
+
         // ---- Public read-only surface consumed by the dispatch + UI systems ----
         public double TicksPerDay     => m_D;
         public float  FramesPerMinute => (float)(m_D / 1440.0);
@@ -67,7 +70,7 @@ namespace TransitTimetables
         private static bool CompatEnabled()
         {
             Setting s = Mod.ActiveSetting;
-            return s == null ? true : s.RealisticTripsCompat; // default ON when the setting isn't loaded yet
+            return s != null && s.RealisticTripsCompat; // default OFF (pure vanilla clock) until the setting says otherwise
         }
 
         protected override void OnCreate()
@@ -82,6 +85,8 @@ namespace TransitTimetables
             m_HaveAnchor = false;
             m_Gen = 0;
             m_ReflectTries = 0;
+            m_NudgedRtOff = false;
+            m_OffDetectTries = 0;
 
             // Correct-from-frame-one seed (works while paused, when OnUpdate cannot run). Best effort; vanilla otherwise.
             if (CompatEnabled())
@@ -112,6 +117,20 @@ namespace TransitTimetables
                 m_SlopeSeeded = false;
                 m_HaveAnchor = false;
                 m_ReflectTries = 0;
+
+                // Compat is OFF, but a slow-time mod may still be installed. Detect it (bounded) and nudge ONCE so the
+                // user knows to switch this on — WITHOUT changing any timing behaviour (m_D stays pinned to vanilla).
+                if (!m_NudgedRtOff && m_OffDetectTries < REFLECT_TRIES)
+                {
+                    m_OffDetectTries++;
+                    double d = TryReadDayLengthFrames();
+                    if (d >= D_MIN && d <= D_MAX && Math.Abs(d - VANILLA) > SNAP_TOL * VANILLA)
+                    {
+                        m_NudgedRtOff = true;
+                        Mod.log.Warn($"[SelfTest] slow-time mod detected (day ~{d:F0} frames vs vanilla {VANILLA:F0}) but " +
+                                     "'Realistic Trips / slow-time compatibility' is OFF — turn it ON in the mod settings so timetables stay accurate.");
+                    }
+                }
                 return;
             }
 

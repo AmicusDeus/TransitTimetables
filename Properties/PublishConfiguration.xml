@@ -18,6 +18,14 @@ Select any stop to open a printed-timetable departure board for every line that 
 
 No timetable set = the line runs exactly like vanilla. Everything is controlled from the line's own info panel plus a floating departures board.
 
+OPTIONAL SETTINGS (all off by default — a plain timetable needs none of them):
+- "Realistic travel time" (free): the game's own loop estimate is optimistic (it ignores the time buses lose braking and accelerating at every stop), so posted times drift ahead of reality. Turn this on and the mod measures each line's REAL loop as it runs and posts realistic stop times, so early buses wait at each stop until their true departure. It warms up — for the first day or two it still shows the estimate while it measures, then switches each stop to the measured time.
+- "Provision fleet for real travel time" (costs money): also sizes each line's vehicle count to its real loop. A line whose real loop is ~2x the estimate needs about twice the vehicles to hold the same headway. Grow-only and capped.
+- "Stop at every stop (even empty ones)" (free): by default a bus skips a stop where nobody boards or alights, so that stop isn't held to schedule; the terminus is now always honoured, and this extends that to every stop. Lines run a little slower.
+- "Realistic Trips / slow-time compatibility" (ALPHA): keeps timing correct if you run a mod that lengthens the in-game day (Time2Work / Realistic Trips). Leave off otherwise.
+
+Recommended: for accurate timetables at no cost, turn on "Realistic travel time" and leave the rest off; add "Provision fleet" only if you want the mod to also buy the buses that headway really needs.
+
 Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
 
 Made with Claude Code's Opus 4.8 and Fable 5 models.
@@ -31,7 +39,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.2.83" />
+	<ModVersion Value="0.3.1" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -40,19 +48,24 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.2.83 (alpha) — works with Realistic Trips (Time2Work), plus terminus points at stations
+v0.3.1 — Buses now always stop at the terminus (and optionally at every stop)
 
-- NEW: a "Keep achievements enabled" toggle (General settings) — keeps Cities: Skylines II achievements available while the mod is active. On by default. Settings now also save to disk the moment you change them, so they survive a crash or a non-clean exit.
+- FIX: a bus could SKIP a stop where nobody was boarding or alighting (base-game behaviour — the bus only slows and rolls through, never pulling in). A skipped stop is never held to its scheduled departure, so the bus ran ahead of its timetable — and this could even happen at the TERMINUS, skipping the scheduled wait that anchors the whole line. Timetabled lines now ALWAYS force a stop at the terminus, so the schedule is honoured. (Reported by a community member — thank you.)
 
-- NEW (ALPHA): compatibility with slow-time mods like Realistic Trips / Time2Work. A new setting, "Adapt to slow-time mods" (ON by default), measures the real length of a day at runtime, so on a stretched clock your departures, stop times and vehicle counts stay correct instead of running early. With no such mod installed it changes nothing at all. IMPORTANT: this compatibility path has NOT been tested in-game against Realistic Trips yet — it is an alpha; please report anything odd. Under Realistic Trips your timetabled lines will correctly run fewer vehicles than before.
+- NEW: "Stop at every stop (even empty ones)" setting, OFF by default. Extends the forced stop to every stop on a timetabled line, so every posted departure is honoured — at the cost of a short dwell at each empty stop, which makes lines run a little slower. Buses and other road vehicles only; trains, trams, ships and planes already stop at every station in the base game.
 
-- NEW: terminus points at STATIONS. You can now set a line's terminus at a train, metro, airport or harbour station — not just roadside bus/tram stops. Clicking the station opens its departures board listing every line that stops there.
+v0.3.0 (alpha) — Realistic travel time + per-line custom peak windows
 
-- NEW: a "Set as terminus" button on every line's row in the departures board, so at a shared stop or a multi-platform station you can set the terminus for any line directly, without opening each line first. (A "Set as terminus for all lines here" shortcut appears when two or more lines share the stop.)
+- NEW (ALPHA): "Realistic travel time". Cities: Skylines II's own estimate of how long a line takes is optimistic — it ignores the time buses lose accelerating and braking at every stop, so timetabled lines quietly run a longer effective headway than you set, and the vanilla "vehicles needed" count is too low. The mod now measures each line's REAL loop as it runs and corrects for it. Two new settings, BOTH OFF BY DEFAULT:
+  • "Realistic travel time (correct posted times)" — posts realistic stop times so the departures board matches what the buses actually do. Free; it only makes the clock honest.
+  • "Provision fleet for real travel time (costs money)" — also sizes each line's vehicle count to its real loop. This one spends: a line whose real loop is ~2x the estimate needs about twice the vehicles, and twice the upkeep. Grow-only and capped. OFF = your fleets are unchanged and the panel just tells you the real number needed.
+  Self-calibrating per line, per city — no setup; a new line uses a stop-density estimate until it has measured itself. Works alongside slow-time mods (measured in sim-frames, so a stretched clock doesn't affect it). ALPHA — please report anything odd.
 
-- Tidied the settings page: removed "Max vehicles per line" (no longer needed — timetabled lines already run their full fleet uncapped) and the developer-only "Analyze shared stops" toggle.
+- NEW: per-line custom peak windows (thanks to community contributor incconutwo). A line can set its own two peak windows and headway — e.g. a school or commuter line that runs frequently only 07:00-09:00 and 16:00-18:00 — overriding the global peak settings, without affecting other lines.
 
-Earlier versions: v0.2.7 fixed the vanilla "Assigned Vehicles" slider distortion; v0.2.6 stopped slightly-late buses from waiting a whole cycle and added a 2-minute minimum dwell; v0.2.5 reworked the panel steppers and made the first-departure display honest; v0.2.3 restored on-time departures and auto-repaired vehicle unbunching; v0.2.1-v0.2.2 were hotfixes.
+- The "Realistic Trips / slow-time compatibility" setting now defaults OFF (turn it ON only if you run Time2Work / Realistic Trips); the mod logs a note if it detects such a mod while the setting is off.
+
+Earlier: v0.2.83 added station terminus points, per-row "Set as terminus" buttons, and the "Keep achievements enabled" toggle; v0.2.7 fixed the vanilla "Assigned Vehicles" slider; v0.2.3 restored on-time departures.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />

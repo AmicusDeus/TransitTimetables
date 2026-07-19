@@ -9,6 +9,8 @@ namespace TransitTimetables
     {
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
+        public const string GroupRealism = "Realistic travel time";
+        public const string GroupStops = "Stops";
         public const string GroupCompat = "Compatibility";
         public const string GroupGeneral = "General";
 
@@ -51,12 +53,40 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupWindows)]
         public int NightEnd { get; set; } = 6; // 06:00 = vanilla's transport day start (RouteUtils.TRANSPORT_DAY_START_TIME 0.25f)
 
+        // Realistic travel time: CS2's own pathfinder estimate of how long a line takes systematically UNDERSHOOTS the
+        // real, simulated loop time (live-measured ~1.7x on sparse lines to ~2.5x on stop-dense ones — acceleration and
+        // braking at every stop that the free-flow estimate ignores). The mod measures each line's real loop live and
+        // corrects for it. Both toggles default OFF so existing timetables are unchanged until the player opts in; the
+        // correction is RT-invariant (frame-based), so it composes with the slow-time compatibility above.
+        //
+        // Master toggle — apply the correction to POSTED TIMES and stop holds so the board matches reality (no cost).
+        [SettingsUISection(Section, GroupRealism)]
+        public bool RealisticTravelTime { get; set; } = false;
+
+        // Also size the FLEET to the real loop. This is the one that COSTS MONEY: holding a tight headway on a line whose
+        // real loop is ~2x the estimate needs ~2x the vehicles (and upkeep). OFF = keep the estimate-based count; ON =
+        // provision for the real loop (grow-only; never cuts a line below the estimate; capped).
+        [SettingsUISection(Section, GroupRealism)]
+        public bool ProvisionRealFleet { get; set; } = false;
+
+        // Force buses to physically STOP even when nobody is boarding or alighting. Vanilla lets a bus SKIP an empty
+        // stop — it only slows and rolls through, never pulling in — and a skipped stop is never held to its scheduled
+        // time, so the bus runs ahead of its timetable. That is worst at the TERMINUS, which anchors the whole schedule,
+        // so the terminus is now ALWAYS forced to stop (no setting for it). This toggle extends the forced stop to EVERY
+        // stop on a timetabled line: every posted time is then honoured, at the cost of a short dwell at each empty stop
+        // (lines run a little slower). OFF by default. Buses/road vehicles only — trains, trams, ships and planes already
+        // stop at every station in the base game.
+        [SettingsUISection(Section, GroupStops)]
+        public bool StopAtEveryStop { get; set; } = false;
+
         // Compatibility: adapt the timetable's frame<->minute math to slow-time mods (Time2Work / "Realistic Trips")
-        // that lengthen the in-game day. Default ON. When ON it AUTO-DETECTS the real day length at runtime, so with no
-        // such mod present it measures the vanilla day and behaves identically; OFF pins it to the vanilla 262144
-        // frames/day (exact original behaviour). See TimebaseSystem.
+        // that lengthen the in-game day. Default OFF, so the base mod runs its pure vanilla-clock timing for the vast
+        // majority who use no such mod. Turn it ON only under a slow-time mod: it then AUTO-DETECTS the real day length
+        // at runtime so departures/stop times/fleet stay correct instead of running early. OFF pins it to the vanilla
+        // 262144 frames/day (exact original behaviour). TimebaseSystem nudges (logs) if it detects a slow-time mod
+        // while this is OFF. See TimebaseSystem.
         [SettingsUISection(Section, GroupCompat)]
-        public bool RealisticTripsCompat { get; set; } = true;
+        public bool RealisticTripsCompat { get; set; } = false;
 
         // Keep platform achievements enabled while this mod is active (the game otherwise disables them for any mod).
         [SettingsUISection(Section, GroupGeneral)]
@@ -81,7 +111,10 @@ namespace TransitTimetables
             EveningPeakEnd = 19;
             NightStart = 22;
             NightEnd = 6; // keep in lockstep with the initializer above (this runs on an explicit "reset to defaults")
-            RealisticTripsCompat = true;
+            RealisticTravelTime = false;
+            ProvisionRealFleet = false;
+            StopAtEveryStop = false;
+            RealisticTripsCompat = false;
             EnableAchievements = true;
         }
     }

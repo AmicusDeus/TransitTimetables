@@ -91,6 +91,33 @@ namespace TransitTimetables
         // tick boarding and dropped when it leaves (so the same stop next loop re-stamps). Feeds HoldStop's min-dwell.
         private readonly Dictionary<Entity, uint> m_ArrivedFrame = new Dictionary<Entity, uint>();
 
+        // ===== DIAGNOSTIC (read-only): the game's ESTIMATED line duration vs the MEASURED actual loop time =====
+        // Purpose: gather hard per-line data on how well the pathfinder estimate (ComputeStableDuration) matches the
+        // real time a bus takes, with and without a slow-time mod, so we can decide whether a travel-time correction is
+        // warranted (issue: reporter measured ~150m estimated vs ~180m actual). Measures each vehicle's terminus
+        // DEPARTURE -> next terminus ARRIVAL span (travel + intermediate dwells, EXCLUDING the terminus hold) so it is
+        // directly comparable to the estimate. EMA'd per line. Writes NOTHING to the world — pure observation.
+        private readonly Dictionary<Entity, Entity> m_LapFront = new Dictionary<Entity, Entity>();        // line -> vehicle at its terminus now
+        private readonly Dictionary<Entity, uint>   m_VehTerminusDepart = new Dictionary<Entity, uint>(); // vehicle -> frame it last left the terminus
+        private readonly Dictionary<Entity, float>  m_LineLoopEma = new Dictionary<Entity, float>();      // line -> EMA of measured loop frames
+        private readonly Dictionary<Entity, int>    m_LineLoopSamples = new Dictionary<Entity, int>();    // line -> loop samples so far
+        private readonly Dictionary<Entity, float>  m_LineLoopMin = new Dictionary<Entity, float>();      // line -> running MIN loop (the true single loop; doubles sit above it)
+        private readonly Dictionary<Entity, int>    m_LineRejectStreak = new Dictionary<Entity, int>();   // line -> consecutive gate rejects (drives the stale-anchor reset)
+        // ===== PER-STOP measured arrival offset (frames from the terminus) — the fix for "buses leave early" AND the
+        // feedback loop. Learned ONLY from buses that ran the loop with NO early-arrival hold (m_VehHeld), so the value
+        // is real travel + natural dwell, never the mod's own holds. Drives each stop's posted time directly (per-stop
+        // accurate), replacing the uniform loop-factor that mis-distributed the correction across stops. =====
+        private readonly Dictionary<Entity, float>  m_StopOffsetEma = new Dictionary<Entity, float>();     // waypoint -> EMA arrival offset (frames)
+        private readonly Dictionary<Entity, int>    m_StopOffsetSamples = new Dictionary<Entity, int>();   // waypoint -> samples
+        private readonly HashSet<Entity>            m_VehHeld = new HashSet<Entity>();                      // vehicles EARLY-HELD this loop (excluded from measurement)
+        private readonly Dictionary<Entity, Entity> m_VehLastRecordedStop = new Dictionary<Entity, Entity>(); // veh -> last stop recorded (once per arrival)
+        private const uint  kMinLoopFrames = 1000u;      // ignore absurdly short spans (jitter / same-tick slot churn)
+        private const uint  kMaxLoopFrames = 4194304u;   // ...and absurdly long ones (a loop can't exceed a stretched day)
+        private const float kLoopAlpha     = 0.30f;      // EMA smoothing for the measured loop
+        private const int   kMinTrustSamples = 4;        // measured correction is trusted over the density prior at >= this
+        private const int   kResetAfterRejects = 4;      // consecutive rejects => the min anchor is stale (route edit / glitch): re-anchor
+        private const int   kFleetCap        = 100;      // absolute per-line vehicle sanity cap (a bad reading can't flood)
+
         // Read by VehicleLimitSystem to auto-uncap the vehicle ceiling while any line is timetabled.
         public static bool TimetableInUse;
 
@@ -150,10 +177,9 @@ namespace TransitTimetables
             {
                 Entity line = lines[i];
                 TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
-                TransportLine tl = EntityManager.GetComponentData<TransportLine>(line);
                 CustomPeakSchedule customSch = EntityManager.HasComponent<CustomPeakSchedule>(line)
-                    ? EntityManager.GetComponentData<CustomPeakSchedule>(line)
-                    : default; // Query custom line-specific peak schedules if present, falling back to disabled default state.
+                    ? EntityManager.GetComponentData<CustomPeakSchedule>(line) : CustomPeakSchedule.Default(); // PR #5 per-line peak
+                TransportLine tl = EntityManager.GetComponentData<TransportLine>(line);
 
                 if (!sch.m_Enabled)
                 {
@@ -171,6 +197,12 @@ namespace TransitTimetables
                     m_LastFleet.Remove(line);
                     m_PendingRetire.Remove(line);
                     m_LapServed.Remove(line);
+                    // Reset the loop-time measurement so a re-enabled line measures fresh (its route may have changed).
+                    m_LapFront.Remove(line);
+                    m_LineLoopEma.Remove(line);
+                    m_LineLoopSamples.Remove(line);
+                    m_LineLoopMin.Remove(line);
+                    m_LineRejectStreak.Remove(line);
                     continue;
                 }
                 anyEnabled = true;
@@ -233,13 +265,28 @@ namespace TransitTimetables
                 if (durUnits > 1f)
                 {
                     int interval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
-                    desiredFleet = ScheduleMath.DerivedFleet(durUnits, interval, m_Um);
+                    // Phase 2: size the fleet to the REAL loop when the player opts in (costs money); otherwise the
+                    // estimate, exactly as before. LineCorrection is grow-only for fleet; kFleetCap is the hard backstop.
+                    float fleetUnits = s.ProvisionRealFleet ? durUnits * LineCorrection(line, durUnits, forFleet: true) : durUnits;
+                    desiredFleet = ScheduleMath.DerivedFleet(fleetUnits, interval, m_Um);
+                    // Cap only guards a bad CORRECTION reading, which can only occur under ProvisionRealFleet; gating it
+                    // there keeps the both-settings-OFF path bit-identical to before (an uncorrected line stays uncapped).
+                    if (s.ProvisionRealFleet && desiredFleet > kFleetCap) desiredFleet = kFleetCap;
                     if (m_Fleet.TrySetLineFleet(line, desiredFleet))
                         m_LastFleet[line] = desiredFleet;
                 }
 
                 // (3) terminus = timing point + retirement anchor (player-chosen stop, or the first stop)
                 FindTerminus(line, sch, out Entity terminusStop, out Entity terminusWaypoint);
+
+                // Accumulate this line's measured loop time from terminus front-vehicle changes (feeds LineCorrection).
+                MeasureLap(line, terminusStop, frame, durUnits);
+
+                // (3-pre) FORCE STOPS: make our buses actually pull in and STOP rather than let vanilla skip a stop
+                // where nobody boards or alights — ALWAYS at the terminus (skipping it strands the whole schedule), and
+                // at every stop when the player opts in. A skipped stop never enters Boarding, so the hold below can't
+                // touch it and the bus rolls on early. See ForceStops.
+                int forcedStops = ForceStops(line, terminusWaypoint, s.StopAtEveryStop);
 
                 // (3a) FULL TIMETABLE: hold EACH stop's boarding bus to that stop's scheduled departure — the terminus
                 // schedule shifted by the stop's cumulative offset from the terminus (offset 0 at the terminus).
@@ -248,6 +295,19 @@ namespace TransitTimetables
                 // schedule minutes via the runtime unit scale (m_Um) — matching the UI board's TravelUnitsBetween.
                 int curInterval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
                 bool diagLog = frame - m_LastLog >= 16384; // [SelfTest] cadence — dump the hold's numbers periodically
+
+                // Estimated vs measured loop time for this line (the data that tells us whether the pathfinder estimate
+                // undershoots the real drive time, and by how much — RT on or off). estDur uses the same durUnits that
+                // sizes the fleet; measLoop is the observed terminus-to-terminus travel (see MeasureLap).
+                if (diagLog && m_LineLoopSamples.TryGetValue(line, out int loopN) && loopN > 0)
+                {
+                    float measMin = m_LineLoopEma[line] / m_Fpm;
+                    float estMin  = durUnits * m_Um;
+                    float ratio   = estMin > 0.01f ? measMin / estMin : 0f;
+                    Mod.log.Info($"[SelfTest] laptime line#{line.Index} estDur={estMin:F1}m measLoop={measMin:F1}m " +
+                                 $"ratio={ratio:F2} n={loopN} compat={(s.RealisticTripsCompat ? 1 : 0)}");
+                }
+
                 HoldAllStops(line, s, sch, customSch, sched, terminusStop, terminusWaypoint, frame, nowMin, curInterval, diagLog);
 
                 // (3b) SLOT-COUPLED DRAIN: shed surplus buses at the terminus WITHOUT skipping departures.
@@ -315,7 +375,7 @@ namespace TransitTimetables
                     int surplus = desiredFleet > 0 ? liveCount - desiredFleet : 0;
 
                     if (diagLog)
-                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} surplus={surplus} slotCovered={slotCovered} pending={pending.Count}");
+                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops}");
 
                     if (surplus <= 0)
                     {
@@ -379,9 +439,27 @@ namespace TransitTimetables
             PruneToLive(m_LastFleet, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_PendingRetire, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LapServed, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LapFront, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LineLoopEma, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LineLoopSamples, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LineLoopMin, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LineRejectStreak, m_LiveScratch, m_StaleScratch);
             // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
             PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
+            PruneToLive(m_VehTerminusDepart, m_LiveVehScratch, m_StaleScratch);
+            PruneToLive(m_VehLastRecordedStop, m_LiveVehScratch, m_StaleScratch);
+            m_VehHeld.RemoveWhere(v => !m_LiveVehScratch.Contains(v));
+            // Per-stop offsets are keyed by waypoint (not line); drop entries whose waypoint no longer exists (route
+            // edited / line deleted). Periodic (aligned with the [SelfTest] cadence) so it's a cheap occasional scan.
+            if (frame - m_LastLog >= 16384 && m_StopOffsetSamples.Count > 0)
+            {
+                m_StaleScratch.Clear();
+                foreach (Entity wpKey in m_StopOffsetSamples.Keys)
+                    if (!EntityManager.Exists(wpKey)) m_StaleScratch.Add(wpKey);
+                for (int i = 0; i < m_StaleScratch.Count; i++)
+                { m_StopOffsetSamples.Remove(m_StaleScratch[i]); m_StopOffsetEma.Remove(m_StaleScratch[i]); }
+            }
 
             lines.Dispose();
 
@@ -455,12 +533,19 @@ namespace TransitTimetables
                     .Append(" now=").Append(nowMin).Append("m int=").Append(interval).Append("m stops:")
                 : null;
 
+            bool useMeasured = s.RealisticTravelTime;
             float offUnits = 0f;
             for (int j = 0; j < len; j++)
             {
                 int wpIdx = start + j; if (wpIdx >= len) wpIdx -= len;
                 Entity wp = wps[wpIdx].m_Waypoint;
-                int offMin = (int)System.Math.Round(offUnits * m_Um);
+                // Posted offset for this stop (minutes from the terminus departure): the MEASURED per-stop arrival offset
+                // when the feature is on and we have enough clean samples; otherwise the game's estimate. No uniform
+                // factor — the per-stop measurement is per-stop accurate, so posted times match what the buses do.
+                int offMin = (int)System.Math.Round(offUnits * m_Um);       // estimate fallback (terminus is j==0 -> 0)
+                if (useMeasured && j >= 1 && m_StopOffsetSamples.TryGetValue(wp, out int sn) && sn >= kMinTrustSamples
+                    && m_StopOffsetEma.TryGetValue(wp, out float emaF) && m_Fpm > 0.01f)
+                    offMin = (int)System.Math.Round(emaF / m_Fpm);
                 bool boarding = false;
                 if (EntityManager.HasComponent<Connected>(wp))
                 {
@@ -468,6 +553,19 @@ namespace TransitTimetables
                     if (stop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(stop))
                     {
                         boarding = true;
+                        Entity bveh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
+                        // Stamp the arrival frame HERE (before RecordStopOffset/HoldStop) for our own boarding bus. The
+                        // drain stamps it too, but one tick LATER — too late for RecordStopOffset to see it before
+                        // HoldStop flags a bus that arrives EARLY at THIS stop. Stamping first lets us record this stop's
+                        // CLEAN arrival: a hold at THIS stop happens AFTER arrival, so it does not inflate THIS stop's
+                        // offset — only an UPSTREAM hold does, and that is already excluded via m_VehHeld. Without this,
+                        // only late/dwelling buses ever recorded, biasing each stop's EMA upward toward the slow tail.
+                        if (bveh != Entity.Null && (lineVehicles == null || lineVehicles.Contains(bveh))
+                            && !m_ArrivedFrame.ContainsKey(bveh))
+                            m_ArrivedFrame[bveh] = frame;
+                        // Learn this stop's real arrival offset from the (our-line, upstream-unheld) boarding bus.
+                        if (j >= 1)
+                            RecordStopOffset(line, wp, bveh, lineVehicles, frame);
                         HoldStop(s, sch, customSch, sched, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, lapServed, diag);
                     }
                 }
@@ -597,6 +695,10 @@ namespace TransitTimetables
                 .Append(hold ? (dwelling ? " DWELL]" : " HOLD]") : (overrun ? " GO-clamped]" : " GO]"));
             if (hold)
             {
+                // Mark an EARLY-arrival hold at an INTERMEDIATE stop: this bus's arrival times downstream are pushed
+                // later by the wait, so exclude its whole loop from the per-stop / loop measurement (breaks feedback).
+                // The min-dwell case (dwelling) and the terminus timing-point hold are natural and stay measurable.
+                if (!isTerminus && !dwelling) m_VehHeld.Add(veh);
                 // EARLY -> hold to slot; ON-SLOT/LATE -> hold through the min-dwell. Either way write the target frame
                 // AUTHORITATIVELY (overrides vanilla's unbunching-inflated value); this cannot cut a boarding short —
                 // while held, StopBoarding keeps the bus for a cim walking up (m_MaxBoardingDistance != MaxValue,
@@ -658,6 +760,57 @@ namespace TransitTimetables
             }
         }
 
+        // Force our line's buses to actually STOP at a stop instead of letting vanilla skip it when nobody boards or
+        // alights. Vanilla only pulls a bus into a stop when PublicTransportFlags.RequireStop is set — raised by
+        // ResidentAISystem when a passenger wants on/off, and read in TransportCarAISystem.CheckNavigationLanes to decide
+        // skip-vs-stop. With no demand the flag stays clear and the bus rolls through, so it never enters Boarding and
+        // the timetable hold can't act on it (HoldStop early-returns unless Boarding|EnRoute) — the bus then leaves
+        // early. We simply OR the flag in ourselves:
+        //   - the TERMINUS is forced UNCONDITIONALLY (a skipped terminus strands the schedule — it is the timing anchor);
+        //   - every other stop only when `everyStop` (the player's opt-in), which trades a short dwell at empty stops for
+        //     an honoured posted time at each one.
+        // RequireStop is a TRANSIENT runtime flag: BeginTesting clears it at the start of each boarding test, then the
+        // resident AI re-sets it if there is demand (TransportBoardingHelpers). PublicTransport.m_State IS serialized, but
+        // a saved RequireStop bit self-clears at the very next BeginTesting — so forcing it is save/uninstall-safe (at
+        // worst one extra stop right after an uninstall), unlike m_UnbunchingFactor which nothing ever restores. We
+        // re-assert it every tick (this system runs every 8 frames vs the car AI's 16, so the set reliably lands between
+        // the BeginTesting clear and the skip read), and we ONLY OR it in — never clear it — so we can never suppress a
+        // stop the game genuinely wants. Scoped to THIS line's own RouteVehicles, so buses of other lines sharing a stop
+        // are untouched. (The write also lands on any non-road vehicle on the line, but it is inert there — only
+        // TransportCarAISystem reads RequireStop for the skip; trains/ships/planes never skip.) Returns count forced (diag).
+        private int ForceStops(Entity line, Entity terminusWaypoint, bool everyStop)
+        {
+            if (!EntityManager.HasBuffer<RouteVehicle>(line))
+                return 0;
+            DynamicBuffer<RouteVehicle> vehicles = EntityManager.GetBuffer<RouteVehicle>(line, isReadOnly: true);
+            int forced = 0;
+            for (int v = 0; v < vehicles.Length; v++)
+            {
+                Entity veh = vehicles[v].m_Vehicle;
+                if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
+                    continue;
+                PublicTransport pt = EntityManager.GetComponentData<PublicTransport>(veh);
+                // Only a bus that is IN SERVICE (EnRoute) and currently DRIVING (not already boarding) can skip an
+                // upcoming stop; leave depot-bound / boarding buses alone.
+                if ((pt.m_State & PublicTransportFlags.EnRoute) == 0 || (pt.m_State & PublicTransportFlags.Boarding) != 0)
+                    continue;
+                // Terminus: forced whenever this bus is heading to it (its next waypoint IS the terminus). Same
+                // Target==terminusWaypoint test the drain uses for lap-eligibility, so "waypoint" comparison is correct.
+                bool approachingTerminus = terminusWaypoint != Entity.Null
+                    && EntityManager.HasComponent<Target>(veh)
+                    && EntityManager.GetComponentData<Target>(veh).m_Target == terminusWaypoint;
+                if (!(everyStop || approachingTerminus))
+                    continue;
+                forced++;
+                if ((pt.m_State & PublicTransportFlags.RequireStop) == 0)
+                {
+                    pt.m_State |= PublicTransportFlags.RequireStop;
+                    EntityManager.SetComponentData(veh, pt);
+                }
+            }
+            return forced;
+        }
+
         // Drop dictionary entries whose line is no longer in the live query (deleted while enabled). Reuses `scratch`
         // to gather stale keys so removal doesn't mutate the dictionary mid-enumeration.
         private static void PruneToLive<T>(Dictionary<Entity, T> dict, HashSet<Entity> live, List<Entity> scratch)
@@ -669,6 +822,187 @@ namespace TransitTimetables
                 if (!live.Contains(key)) scratch.Add(key);
             for (int i = 0; i < scratch.Count; i++)
                 dict.Remove(scratch[i]);
+        }
+
+        // Measure a line's real loop time and EMA it (this now FEEDS the real-travel-time correction, not just the
+        // diagnostic). Watches the vehicle occupying the terminus boarding slot; when that front vehicle CHANGES we stamp
+        // the outgoing bus's departure frame, and when a bus we previously saw depart returns to the terminus we fold its
+        // span (departure -> arrival = travel + intermediate dwells, EXCLUDING the terminus hold) into the line's EMA.
+        // Comparable apples-to-apples with the pathfinder estimate (ComputeStableDuration), which also excludes the
+        // terminus hold. Reads the world only; the correction it feeds is applied elsewhere. See AcceptLoopSample.
+        private void MeasureLap(Entity line, Entity terminusStop, uint frame, float durUnits)
+        {
+            Entity curFront = Entity.Null;
+            if (terminusStop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(terminusStop))
+            {
+                Entity f = EntityManager.GetComponentData<BoardingVehicle>(terminusStop).m_Vehicle;
+                if (f != Entity.Null && EntityManager.HasComponent<PublicTransport>(f))
+                {
+                    PublicTransport pt = EntityManager.GetComponentData<PublicTransport>(f);
+                    if ((pt.m_State & PublicTransportFlags.Boarding) != 0 && (pt.m_State & PublicTransportFlags.EnRoute) != 0)
+                        curFront = f; // a serving bus is boarding the terminus right now
+                }
+            }
+
+            m_LapFront.TryGetValue(line, out Entity prevFront);
+            if (curFront == prevFront)
+                return; // no change at the terminus slot this tick — nothing to measure
+
+            if (prevFront != Entity.Null)
+            {
+                m_VehTerminusDepart[prevFront] = frame; // the previous front just vacated the terminus — a fresh loop begins
+                m_VehHeld.Remove(prevFront);            // clear the early-held flag; measure this new loop clean
+                m_VehLastRecordedStop.Remove(prevFront);
+            }
+
+            if (curFront != Entity.Null
+                && m_VehTerminusDepart.TryGetValue(curFront, out uint dep) && frame > dep
+                && !m_VehHeld.Contains(curFront))       // FEEDBACK GUARD: only trust a loop the bus ran WITHOUT an early hold
+            {
+                uint loop = frame - dep; // this bus's own departure -> return span (one full serving loop)
+                if (loop >= kMinLoopFrames && loop <= kMaxLoopFrames && AcceptLoopSample(line, loop, durUnits))
+                {
+                    if (m_LineLoopSamples.TryGetValue(line, out int n) && n > 0)
+                        m_LineLoopEma[line] += kLoopAlpha * (loop - m_LineLoopEma[line]);
+                    else
+                        m_LineLoopEma[line] = loop;
+                    m_LineLoopSamples[line] = (m_LineLoopSamples.TryGetValue(line, out int nn) ? nn : 0) + 1;
+                }
+            }
+
+            m_LapFront[line] = curFront;
+        }
+
+        // Reject implausible loop samples so the measurement survives BUNCHING. On a busy line a bus can roll through the
+        // terminus while another occupies the boarding slot, so its pass is missed and the NEXT detected span is a
+        // DOUBLE (~2x the real loop — this is what made #991323 read up to 4.75x live). Key insight: a missed pass makes
+        // a span a MULTIPLE of the truth, never a fraction, so the TRUE single loop is the MINIMUM of the spans. We gate
+        // against a running MIN rather than the EMA: the min drops freely toward the truth (a genuine lower value always
+        // lowers the anchor), and anything well above it (a double-count or a stall) is rejected. Unlike an EMA-keyed
+        // band this cannot be self-poisoned. A RUN of rejections means the anchor itself is stale — a glitch-low first
+        // sample pinned it, or a route edit lengthened the loop — so we re-anchor upward and recalibrate (heals both).
+        private bool AcceptLoopSample(Entity line, uint loop, float durUnits)
+        {
+            float estFrames = durUnits * 60f; // a route "duration unit" is 60 sim frames
+            if (estFrames > 1f && (loop < 0.40f * estFrames || loop > 4.5f * estFrames))
+                return false; // physically absurd vs the estimate — never trust it
+
+            if (!m_LineLoopMin.TryGetValue(line, out float min))
+            {
+                m_LineLoopMin[line] = loop;      // first candidate seeds the anchor
+                m_LineRejectStreak.Remove(line);
+                return true;
+            }
+            if (loop <= min)
+            {
+                m_LineLoopMin[line] = loop;      // a lower true value — follow the anchor down
+                m_LineRejectStreak.Remove(line);
+                return true;
+            }
+            if (loop <= 1.6f * min)
+            {
+                m_LineRejectStreak.Remove(line); // a normal single near the min
+                return true;
+            }
+            // loop > 1.6x min: a double-count or stall. Reject — unless it keeps happening, in which case the anchor is
+            // stale (route lengthened, or the min was a glitch): re-anchor to this sample and recalibrate the value.
+            int streak = (m_LineRejectStreak.TryGetValue(line, out int rs) ? rs : 0) + 1;
+            if (streak >= kResetAfterRejects)
+            {
+                m_LineLoopMin[line] = loop;
+                m_LineRejectStreak.Remove(line);
+                m_LineLoopEma.Remove(line);      // old baseline was stale — re-measure the value from scratch
+                m_LineLoopSamples.Remove(line);
+                return true;
+            }
+            m_LineRejectStreak[line] = streak;
+            return false;
+        }
+
+        // The per-line real-travel-time correction factor (dimensionless, RT-invariant): (real loop) / (estimated loop).
+        // Uses the LIVE measurement once the line has logged enough clean loops; until then, the stop-density prior as a
+        // cold-start seed. Clamped for safety (grow-only for fleet). durUnits is the line's estimated loop in route units.
+        // Public so the panel/board (TransitParamsUISystem) can post the same corrected times the holds use.
+        public float LineCorrection(Entity line, float durUnits, bool forFleet)
+        {
+            float estFrames = durUnits * 60f;
+            float factor;
+            if (m_LineLoopSamples.TryGetValue(line, out int n) && n >= kMinTrustSamples
+                && m_LineLoopEma.TryGetValue(line, out float ema) && estFrames > 1f)
+                factor = ema / estFrames;                                            // measured (frames/frames)
+            else
+                factor = ScheduleMath.DensityPriorRatio(CountStops(line), durUnits); // bootstrap from stop density
+            return ScheduleMath.ClampCorrection(factor, forFleet);
+        }
+
+        // True once the line's correction is driven by LIVE measurement (>= kMinTrustSamples clean loops) rather than the
+        // density prior — used by the panel to label the real-loop figure "measured" vs "estimated".
+        public bool LineCorrectionMeasured(Entity line)
+            => m_LineLoopSamples.TryGetValue(line, out int n) && n >= kMinTrustSamples;
+
+        // Count the line's boarding stops (route waypoints connected to a stop platform), for the density prior. Matches
+        // how FindTerminus / HoldAllStops identify a "stop" (a Connected waypoint whose target has a BoardingVehicle).
+        private int CountStops(Entity line)
+        {
+            if (!EntityManager.HasBuffer<RouteWaypoint>(line))
+                return 0;
+            DynamicBuffer<RouteWaypoint> wps = EntityManager.GetBuffer<RouteWaypoint>(line, isReadOnly: true);
+            int count = 0;
+            for (int i = 0; i < wps.Length; i++)
+            {
+                Entity wp = wps[i].m_Waypoint;
+                if (EntityManager.HasComponent<Connected>(wp))
+                {
+                    Entity st = EntityManager.GetComponentData<Connected>(wp).m_Connected;
+                    if (st != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(st))
+                        count++;
+                }
+            }
+            return count;
+        }
+
+        // Learn a stop's real arrival offset (frames from the terminus departure) from a boarding bus — but ONLY our own
+        // line's bus, and ONLY if it ran this loop UNHELD (m_VehHeld). An unheld bus's arrival reflects real travel +
+        // natural dwell, never the mod's holds, so this cannot feed back. Recorded once per arrival (m_VehLastRecordedStop).
+        private void RecordStopOffset(Entity line, Entity wp, Entity veh, HashSet<Entity> lineVehicles, uint frame)
+        {
+            if (veh == Entity.Null || (lineVehicles != null && !lineVehicles.Contains(veh)))
+                return;                                                              // foreign / no bus
+            if (m_VehHeld.Contains(veh))
+                return;                                                              // early-held this loop -> arrival inflated
+            if (!m_VehTerminusDepart.TryGetValue(veh, out uint term) || frame <= term)
+                return;                                                              // need a known terminus departure this run
+            if (!m_ArrivedFrame.TryGetValue(veh, out uint arrived) || arrived <= term)
+                return;                                                              // need its arrival time at this stop
+            if (m_VehLastRecordedStop.TryGetValue(veh, out Entity last) && last == wp)
+                return;                                                              // already recorded this arrival
+            m_VehLastRecordedStop[veh] = wp;
+            float offset = arrived - term;                                           // pure arrival offset from terminus (frames)
+            if (offset < 1f)
+                return;
+            // Plausibility: a missed upstream-arrival detection could make one "offset" span extra ground; reject an
+            // offset larger than the whole measured loop (with margin) so a glitch can't poison a stop.
+            if (m_LineLoopEma.TryGetValue(line, out float loopF) && loopF > 1f && offset > 1.25f * loopF)
+                return;
+            if (m_StopOffsetSamples.TryGetValue(wp, out int n) && n > 0)
+                m_StopOffsetEma[wp] += kLoopAlpha * (offset - m_StopOffsetEma[wp]);
+            else
+                m_StopOffsetEma[wp] = offset;
+            m_StopOffsetSamples[wp] = (m_StopOffsetSamples.TryGetValue(wp, out int nn) ? nn : 0) + 1;
+        }
+
+        // Measured posted offset (minutes from the terminus) for a stop waypoint, once it has enough clean samples.
+        // Public so the UI board posts the SAME per-stop times the holds use. False -> caller uses the estimate.
+        public bool TryStopOffsetMinutes(Entity wp, out int minutes)
+        {
+            minutes = 0;
+            if (m_StopOffsetSamples.TryGetValue(wp, out int n) && n >= kMinTrustSamples
+                && m_StopOffsetEma.TryGetValue(wp, out float f) && m_Fpm > 0.01f)
+            {
+                minutes = (int)System.Math.Round(f / m_Fpm);
+                return true;
+            }
+            return false;
         }
 
         // Resolve the line's terminus stop and its waypoint: the player-chosen stop if set and valid, otherwise the

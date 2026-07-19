@@ -23,6 +23,7 @@ namespace TransitTimetables
         private TimeSystem m_TimeSystem;
         private HourlyFleetSystem m_Fleet;
         private TimebaseSystem m_Timebase;
+        private TimetableDispatchSystem m_Dispatch;   // for the shared real-travel-time LineCorrection (board == holds)
         private ToolSystem m_ToolSystem;
 
         // Selected LINE timetable cache.
@@ -30,19 +31,15 @@ namespace TransitTimetables
         private bool m_SelTtEnabled;
         private int m_SelTtFirst, m_SelTtPeak, m_SelTtOffPeak, m_SelTtNight, m_SelTtInterval, m_SelTtFleet;
         private string m_SelTtNext = "";
+        private string m_SelTtRealInfo = "";        // honest real-travel-time line (real loop vs estimate + fleet consequence)
         private int m_SelSchedule = 2;              // RouteSchedule: 0=Day, 1=Night, 2=DayAndNight (which intervals apply)
         private string m_PeakHours = "", m_NightHours = "";
         private GetterValueBinding<bool> m_SelHasB, m_SelTtEnabledB;
         private GetterValueBinding<int> m_SelTtFirstB, m_SelTtPeakB, m_SelTtOffPeakB, m_SelTtNightB, m_SelTtIntervalB, m_SelTtFleetB, m_SelScheduleB;
-        private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB;
-
-        // Selected LINE custom peak cache (enables fine-grained, line-specific peak hour/headway overrides).
+        private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB, m_SelTtRealInfoB;
+        // Per-line custom peak (PR #5): enabled + interval + two hour windows.
         private bool m_SelCustomPeakEnabled;
-        private int m_SelCustomPeakInterval;
-        private int m_SelCustomPeakStart1;
-        private int m_SelCustomPeakEnd1;
-        private int m_SelCustomPeakStart2;
-        private int m_SelCustomPeakEnd2;
+        private int m_SelCustomPeakInterval = 5, m_SelCustomPeakStart1 = 7, m_SelCustomPeakEnd1 = 9, m_SelCustomPeakStart2 = 16, m_SelCustomPeakEnd2 = 18;
         private GetterValueBinding<bool> m_SelCustomPeakEnabledB;
         private GetterValueBinding<int> m_SelCustomPeakIntervalB, m_SelCustomPeakStart1B, m_SelCustomPeakEnd1B, m_SelCustomPeakStart2B, m_SelCustomPeakEnd2B;
 
@@ -79,6 +76,7 @@ namespace TransitTimetables
             m_TimeSystem = World.GetOrCreateSystemManaged<TimeSystem>();
             m_Fleet = World.GetOrCreateSystemManaged<HourlyFleetSystem>();
             m_Timebase = World.GetOrCreateSystemManaged<TimebaseSystem>();
+            m_Dispatch = World.GetOrCreateSystemManaged<TimetableDispatchSystem>();
             m_ToolSystem = World.GetOrCreateSystemManaged<ToolSystem>();
 
             m_SelHasB = new GetterValueBinding<bool>(Group, "selHas", () => m_SelHas);
@@ -90,16 +88,16 @@ namespace TransitTimetables
             m_SelTtIntervalB = new GetterValueBinding<int>(Group, "selTtInterval", () => m_SelTtInterval);
             m_SelTtFleetB = new GetterValueBinding<int>(Group, "selTtFleet", () => m_SelTtFleet);
             m_SelTtNextB = new GetterValueBinding<string>(Group, "selTtNext", () => m_SelTtNext ?? "");
-            m_SelScheduleB = new GetterValueBinding<int>(Group, "selSchedule", () => m_SelSchedule);
-            m_PeakHoursB = new GetterValueBinding<string>(Group, "peakHours", () => m_PeakHours ?? "");
-            m_NightHoursB = new GetterValueBinding<string>(Group, "nightHours", () => m_NightHours ?? "");
+            m_SelTtRealInfoB = new GetterValueBinding<string>(Group, "selTtRealInfo", () => m_SelTtRealInfo ?? "");
             m_SelCustomPeakEnabledB = new GetterValueBinding<bool>(Group, "selCustomPeakEnabled", () => m_SelCustomPeakEnabled);
             m_SelCustomPeakIntervalB = new GetterValueBinding<int>(Group, "selCustomPeakInterval", () => m_SelCustomPeakInterval);
             m_SelCustomPeakStart1B = new GetterValueBinding<int>(Group, "selCustomPeakStart1", () => m_SelCustomPeakStart1);
             m_SelCustomPeakEnd1B = new GetterValueBinding<int>(Group, "selCustomPeakEnd1", () => m_SelCustomPeakEnd1);
             m_SelCustomPeakStart2B = new GetterValueBinding<int>(Group, "selCustomPeakStart2", () => m_SelCustomPeakStart2);
             m_SelCustomPeakEnd2B = new GetterValueBinding<int>(Group, "selCustomPeakEnd2", () => m_SelCustomPeakEnd2);
-
+            m_SelScheduleB = new GetterValueBinding<int>(Group, "selSchedule", () => m_SelSchedule);
+            m_PeakHoursB = new GetterValueBinding<string>(Group, "peakHours", () => m_PeakHours ?? "");
+            m_NightHoursB = new GetterValueBinding<string>(Group, "nightHours", () => m_NightHours ?? "");
             m_SelStopHasB = new GetterValueBinding<bool>(Group, "selStopHas", () => m_SelStopHas);
             m_SelStopBoardB = new GetterValueBinding<string>(Group, "selStopBoard", () => m_SelStopBoard ?? "[]");
             m_AutoOpenB = new GetterValueBinding<int>(Group, "autoOpen", () => m_AutoOpen);
@@ -114,27 +112,28 @@ namespace TransitTimetables
             AddBinding(m_SelTtIntervalB);
             AddBinding(m_SelTtFleetB);
             AddBinding(m_SelTtNextB);
-            AddBinding(m_SelScheduleB);
-            AddBinding(m_PeakHoursB);
-            AddBinding(m_NightHoursB);
+            AddBinding(m_SelTtRealInfoB);
             AddBinding(m_SelCustomPeakEnabledB);
             AddBinding(m_SelCustomPeakIntervalB);
             AddBinding(m_SelCustomPeakStart1B);
             AddBinding(m_SelCustomPeakEnd1B);
             AddBinding(m_SelCustomPeakStart2B);
             AddBinding(m_SelCustomPeakEnd2B);
+            AddBinding(m_SelScheduleB);
+            AddBinding(m_PeakHoursB);
+            AddBinding(m_NightHoursB);
             AddBinding(m_SelStopHasB);
             AddBinding(m_SelStopBoardB);
             AddBinding(m_AutoOpenB);
             AddBinding(m_SelStopLineNumB);
             AddBinding(m_SelStopLineServesB);
- 
+
             AddBinding(new TriggerBinding<bool>(Group, "setSelTtEnabled", v => MutateSchedule(v, (ref TimetableSchedule sch, bool on) => sch.m_Enabled = on)));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtFirst", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_FirstDeparture = (ushort)Clamp(x, 0, 1439))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtPeak", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_PeakInterval = (ushort)Clamp(x, 1, 240))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtOffPeak", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_OffPeakInterval = (ushort)Clamp(x, 1, 240))));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtNight", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_NightInterval = (ushort)Clamp(x, 1, 240))));
-
+            // Per-line custom peak (PR #5): enable + interval + two hour windows.
             AddBinding(new TriggerBinding<bool>(Group, "setSelCustomPeakEnabled", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, bool on) => c.m_Enabled = on)));
             AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakInterval", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_Interval = (ushort)Clamp(x, 1, 240))));
             AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakStart1", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_Start1 = (ushort)Clamp(x, 0, 23))));
@@ -163,20 +162,20 @@ namespace TransitTimetables
             EntityManager.SetComponentData(sel, sch);
         }
 
-        private delegate void RefCustomPeakAction<T>(ref CustomPeakSchedule customSch, T value);
+        private delegate void RefCustomPeakAction<T>(ref CustomPeakSchedule c, T value);
 
-        // Read-modify-write the selected line's custom peak schedule, attaching the component on first modification.
+        // Read-modify-write the selected line's CUSTOM PEAK component (PR #5), creating it on first touch.
         private void MutateCustomPeak<T>(T value, RefCustomPeakAction<T> action)
         {
             Entity sel = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
             if (sel == Entity.Null || !EntityManager.HasComponent<TransportLine>(sel))
                 return;
             bool had = EntityManager.HasComponent<CustomPeakSchedule>(sel);
-            CustomPeakSchedule customSch = had ? EntityManager.GetComponentData<CustomPeakSchedule>(sel) : CustomPeakSchedule.Default();
-            action(ref customSch, value);
+            CustomPeakSchedule c = had ? EntityManager.GetComponentData<CustomPeakSchedule>(sel) : CustomPeakSchedule.Default();
+            action(ref c, value);
             if (!had)
                 EntityManager.AddComponent<CustomPeakSchedule>(sel);
-            EntityManager.SetComponentData(sel, customSch);
+            EntityManager.SetComponentData(sel, c);
         }
 
         // Make board rows their line's terminus. onlyLine == Entity.Null → every line on the board (each to the platform
@@ -234,15 +233,16 @@ namespace TransitTimetables
             m_SelTtIntervalB.Update();
             m_SelTtFleetB.Update();
             m_SelTtNextB.Update();
-            m_SelScheduleB.Update();
-            m_PeakHoursB.Update();
-            m_NightHoursB.Update();
+            m_SelTtRealInfoB.Update();
             m_SelCustomPeakEnabledB.Update();
             m_SelCustomPeakIntervalB.Update();
             m_SelCustomPeakStart1B.Update();
             m_SelCustomPeakEnd1B.Update();
             m_SelCustomPeakStart2B.Update();
             m_SelCustomPeakEnd2B.Update();
+            m_SelScheduleB.Update();
+            m_PeakHoursB.Update();
+            m_NightHoursB.Update();
             m_SelStopHasB.Update();
             m_SelStopBoardB.Update();
             m_AutoOpenB.Update();
@@ -275,39 +275,36 @@ namespace TransitTimetables
             if (isLine && EntityManager.HasComponent<TimetableSchedule>(sel))
             {
                 TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(sel);
-                CustomPeakSchedule customSch = EntityManager.HasComponent<CustomPeakSchedule>(sel)
-                    ? EntityManager.GetComponentData<CustomPeakSchedule>(sel)
-                    : default;
+                CustomPeakSchedule cps = EntityManager.HasComponent<CustomPeakSchedule>(sel)
+                    ? EntityManager.GetComponentData<CustomPeakSchedule>(sel) : CustomPeakSchedule.Default(); // PR #5 per-line peak
                 m_SelTtEnabled = sch.m_Enabled;
                 m_SelTtFirst = sch.m_FirstDeparture;
                 m_SelTtPeak = sch.m_PeakInterval;
                 m_SelTtOffPeak = sch.m_OffPeakInterval;
                 m_SelTtNight = sch.m_NightInterval;
-                m_SelTtInterval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, m_SelSchedule);
+                m_SelCustomPeakEnabled = cps.m_Enabled;
+                m_SelCustomPeakInterval = cps.m_Interval;
+                m_SelCustomPeakStart1 = cps.m_Start1; m_SelCustomPeakEnd1 = cps.m_End1;
+                m_SelCustomPeakStart2 = cps.m_Start2; m_SelCustomPeakEnd2 = cps.m_End2;
+                m_SelTtInterval = ScheduleMath.IntervalFor(s, sch, cps, nowMin, m_SelSchedule);
                 float dur = m_Fleet != null ? m_Fleet.LineStableDurationUnits(sel) : 0f;
-                m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(dur, m_SelTtInterval, m_Timebase.UnitMinutes) : 0;
+                float um = m_Timebase.UnitMinutes;
+                // The panel's fleet count = what the dispatch actually provisions: the corrected loop when
+                // ProvisionRealFleet is on (grow-only), else the estimate — so the number matches the buses on the road.
+                float fleetUnits = (s.ProvisionRealFleet && m_Dispatch != null && dur > 1f)
+                    ? dur * m_Dispatch.LineCorrection(sel, dur, true) : dur;
+                m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(fleetUnits, m_SelTtInterval, um) : 0;
+                m_SelTtRealInfo = BuildRealInfo(sel, dur, um); // honest real-vs-estimate line (shown regardless of toggles)
                 Entity term = TerminusWaypoint(sel, sch);
                 m_SelTtNext = DeparturesAtStop(sel, sch, term, term, m_SelSchedule, nowMin); // next departures from now
-
-                m_SelCustomPeakEnabled = customSch.m_Enabled;
-                m_SelCustomPeakInterval = customSch.m_Interval;
-                m_SelCustomPeakStart1 = customSch.m_Start1;
-                m_SelCustomPeakEnd1 = customSch.m_End1;
-                m_SelCustomPeakStart2 = customSch.m_Start2;
-                m_SelCustomPeakEnd2 = customSch.m_End2;
             }
             else
             {
                 m_SelTtEnabled = false;
                 m_SelTtFirst = 300; m_SelTtPeak = 8; m_SelTtOffPeak = 12; m_SelTtNight = 30;
-                m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = "";
-
-                m_SelCustomPeakEnabled = false;
-                m_SelCustomPeakInterval = 5;
-                m_SelCustomPeakStart1 = 7;
-                m_SelCustomPeakEnd1 = 9;
-                m_SelCustomPeakStart2 = 16;
-                m_SelCustomPeakEnd2 = 18;
+                m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = ""; m_SelTtRealInfo = "";
+                m_SelCustomPeakEnabled = false; m_SelCustomPeakInterval = 5;
+                m_SelCustomPeakStart1 = 7; m_SelCustomPeakEnd1 = 9; m_SelCustomPeakStart2 = 16; m_SelCustomPeakEnd2 = 18;
             }
 
             // Stop selection -> departure board. A roadside bus/tram stop IS the selected entity; a train / metro /
@@ -519,6 +516,40 @@ namespace TransitTimetables
             return Entity.Null;
         }
 
+        // The honest "real travel time" line for the selected timetabled line: how far its measured (or density-estimated)
+        // real loop is from the game's own estimate, and the fleet consequence. Shown REGARDLESS of the toggles so the
+        // player can SEE the gap and decide whether to correct the clock / provision the fleet. Empty when the estimate is
+        // already close or there is nothing to measure.
+        private string BuildRealInfo(Entity line, float dur, float um)
+        {
+            if (m_Dispatch == null || dur <= 1f) return "";
+            float corr = m_Dispatch.LineCorrection(line, dur, false);
+            if (corr > 0.98f && corr < 1.03f) return ""; // estimate is close enough — nothing worth saying
+            int interval = m_SelTtInterval < 1 ? 1 : m_SelTtInterval;
+            int estMin  = (int)System.Math.Round(dur * um);
+            int realMin = (int)System.Math.Round(dur * um * corr);
+            bool measured = m_Dispatch.LineCorrectionMeasured(line);
+            var sb = new StringBuilder();
+            sb.Append("Real loop ~").Append(realMin).Append(" min (")
+              .Append(corr.ToString("0.0")).Append("x the ").Append(estMin).Append("-min estimate, ")
+              .Append(measured ? "measured" : "estimated").Append("). ");
+            Setting s = S;
+            if (s != null && s.ProvisionRealFleet)
+            {
+                float fc = m_Dispatch.LineCorrection(line, dur, true);
+                int realFleet = ScheduleMath.DerivedFleet(dur * fc, interval, um);
+                sb.Append("Provisioning ~").Append(realFleet).Append(" vehicles for it.");
+            }
+            else
+            {
+                int estFleet = ScheduleMath.DerivedFleet(dur, interval, um);
+                int eff = estFleet > 0 ? (int)System.Math.Round((double)realMin / estFleet) : 0;
+                sb.Append("Running ~").Append(estFleet).Append(" vehicles -> effective headway ~")
+                  .Append(eff).Append(" min (you set ").Append(interval).Append(").");
+            }
+            return sb.ToString();
+        }
+
         // The NEXT departures (from now) as seen AT `stopWp`: each terminus departure shifted by travel terminus ->
         // stopWp. A terminus departure D appears here as D+offset, so we list terminus departures from now-offset.
         // Up to 6, "HH:MM, ...".
@@ -526,15 +557,21 @@ namespace TransitTimetables
         {
             if (terminusWp == Entity.Null || stopWp == Entity.Null)
                 return "";
-            int offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes);
+            // Real-travel-time: post the MEASURED per-stop arrival offset the holds use (when opted in and learned), so
+            // the board matches what the buses actually do. Otherwise the game's estimate. No uniform factor.
+            int offset;
+            if (S != null && S.RealisticTravelTime && m_Dispatch != null && stopWp != terminusWp
+                && m_Dispatch.TryStopOffsetMinutes(stopWp, out int measOff))
+                offset = measOff;
+            else
+                offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes);
             // Clamp the seed so a stop whose first arrival is still ahead (offset > now, early morning) advertises the
             // real first bus rather than extrapolating yesterday's sequence backwards across midnight.
             int seed = nowMin - offset;
             if (seed < 0) seed = 0;
             int[] deps = new int[6];
             CustomPeakSchedule customSch = EntityManager.HasComponent<CustomPeakSchedule>(line)
-                ? EntityManager.GetComponentData<CustomPeakSchedule>(line)
-                : default;
+                ? EntityManager.GetComponentData<CustomPeakSchedule>(line) : CustomPeakSchedule.Default(); // PR #5 per-line peak
             int n = ScheduleMath.Upcoming(S, sch, customSch, schedule, seed, deps, 6);
             var sb = new StringBuilder();
             for (int k = 0; k < n; k++)
