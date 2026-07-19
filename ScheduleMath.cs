@@ -14,15 +14,28 @@ namespace TransitTimetables
     // window); a day-only line never uses the night interval and does not run at night.
     public static class ScheduleMath
     {
-        // Headway (minutes) in effect at a given minute-of-day, respecting the line's operating schedule.
-        public static int IntervalFor(Setting s, TimetableSchedule sch, int minuteOfDay, int schedule)
+        // Headway (minutes) in effect at a given minute-of-day, respecting the line's operating schedule. A per-line
+        // CUSTOM PEAK (PR #5), when enabled and the hour falls inside either custom window, OVERRIDES the global
+        // peak/off-peak/night for this line only.
+        public static int IntervalFor(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int minuteOfDay, int schedule)
         {
             int hour = Hour(minuteOfDay);
+            if (customSch.m_Enabled
+                && (InWindow(hour, customSch.m_Start1, customSch.m_End1) || InWindow(hour, customSch.m_Start2, customSch.m_End2)))
+                return Pos(customSch.m_Interval);
             if (schedule == LineSchedule.Night) return Pos(sch.m_NightInterval);                          // night-only
             if (schedule == LineSchedule.Day) return s.InPeakWindow(hour) ? Pos(sch.m_PeakInterval) : Pos(sch.m_OffPeakInterval); // day-only, never night
             if (s.InNightWindow(hour)) return Pos(sch.m_NightInterval);
             if (s.InPeakWindow(hour)) return Pos(sch.m_PeakInterval);
             return Pos(sch.m_OffPeakInterval);
+        }
+
+        // Half-open [start, end) hour window, wrapping past midnight when start > end (mirrors Setting.InWindow). Public
+        // so the per-line custom-peak windows use the same rule the global windows do.
+        public static bool InWindow(int hour, int start, int end)
+        {
+            if (start == end) return false;
+            return start < end ? (hour >= start && hour < end) : (hour >= start || hour < end);
         }
 
         // The LONGEST headway this line can legitimately run, mirroring IntervalFor's own branches (a day-only line
@@ -31,15 +44,20 @@ namespace TransitTimetables
         // hold. Deliberately NOT IntervalFor(now): the interval can CHANGE across a window boundary (a 04:50 night
         // slot at interval 30 schedules 05:20, but IntervalFor(05:00) is the off-peak 12), so a per-minute bound would
         // spuriously release a bus that is waiting a legitimate headway across the crossover.
-        public static int MaxInterval(TimetableSchedule sch, int schedule)
+        public static int MaxInterval(TimetableSchedule sch, CustomPeakSchedule customSch, int schedule)
         {
-            if (schedule == LineSchedule.Night) return Pos(sch.m_NightInterval);
-            int m = Pos(sch.m_PeakInterval);
-            int o = Pos(sch.m_OffPeakInterval);
-            if (o > m) m = o;
-            if (schedule == LineSchedule.Day) return m; // day-only never runs the night interval
-            int n = Pos(sch.m_NightInterval);
-            return n > m ? n : m;
+            int max;
+            if (schedule == LineSchedule.Night) max = Pos(sch.m_NightInterval);
+            else
+            {
+                max = Pos(sch.m_PeakInterval);
+                int o = Pos(sch.m_OffPeakInterval);
+                if (o > max) max = o;
+                if (schedule != LineSchedule.Day) { int n = Pos(sch.m_NightInterval); if (n > max) max = n; } // day-only never runs night
+            }
+            // A custom-peak interval is also a headway this line can legitimately run, so the hold bound must include it.
+            if (customSch.m_Enabled) { int c = Pos(customSch.m_Interval); if (c > max) max = c; }
+            return max;
         }
 
         // The effective first-departure minute-of-day. A night-only line's first departure is interpreted within the
@@ -69,7 +87,7 @@ namespace TransitTimetables
         // Next scheduled departure as an ABSOLUTE minute from today's midnight (may be negative when tonight's night
         // service actually started yesterday, or exceed 1439 for tomorrow) that is >= nowMinute AND in-service. Scans
         // yesterday/today/tomorrow so a night window that wraps past midnight resolves correctly. Used by the hold.
-        public static int NextDeparture(Setting s, TimetableSchedule sch, int schedule, int nowMinute)
+        public static int NextDeparture(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
         {
             int first = FirstDeparture(s, sch, schedule);
             for (int day = -1; day <= 1; day++)
@@ -84,7 +102,7 @@ namespace TransitTimetables
                     int minute = Mod1440(t);
                     if (!InService(s, schedule, minute)) break; // left the operating window -> this block is done
                     if (t >= nowMinute) return t;               // earliest in-window departure at/after now
-                    t += IntervalFor(s, sch, minute, schedule);
+                    t += IntervalFor(s, sch, customSch, minute, schedule);
                     guard++;
                 }
             }
@@ -93,7 +111,7 @@ namespace TransitTimetables
 
         // The day's departures listed FROM the first departure (printed-timetable style), as minute-of-day 0..1439,
         // stopping at the operating-window boundary. Fills up to `count`; returns how many.
-        public static int DayFromFirst(Setting s, TimetableSchedule sch, int schedule, int[] outMin, int count)
+        public static int DayFromFirst(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int[] outMin, int count)
         {
             int t = FirstDeparture(s, sch, schedule);
             int n = 0, guard = 0;
@@ -101,7 +119,7 @@ namespace TransitTimetables
             {
                 int minute = Mod1440(t);
                 outMin[n++] = minute;
-                int next = t + IntervalFor(s, sch, minute, schedule);
+                int next = t + IntervalFor(s, sch, customSch, minute, schedule);
                 if (!InService(s, schedule, Mod1440(next))) break; // reached the window boundary
                 t = next;
                 guard++;
@@ -111,14 +129,14 @@ namespace TransitTimetables
 
         // The next `count` departures at/after nowMinute (as minute-of-day 0..1439), schedule-aware. Steps via
         // NextDeparture so night/day operating windows and midnight wrap are handled. Returns how many filled.
-        public static int Upcoming(Setting s, TimetableSchedule sch, int schedule, int nowMinute, int[] outMin, int count)
+        public static int Upcoming(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute, int[] outMin, int count)
         {
-            int t = NextDeparture(s, sch, schedule, nowMinute);
+            int t = NextDeparture(s, sch, customSch, schedule, nowMinute);
             int n = 0, guard = 0;
             while (n < count && guard < 4000)
             {
                 outMin[n++] = Mod1440(t);
-                int next = NextDeparture(s, sch, schedule, t + 1);
+                int next = NextDeparture(s, sch, customSch, schedule, t + 1);
                 if (next <= t) break; // safety: schedule not advancing
                 t = next;
                 guard++;
@@ -136,6 +154,44 @@ namespace TransitTimetables
             intervalMinutes = Pos(intervalMinutes);
             int fleet = (int)Math.Ceiling(RoundTripMinutes(stableDurationUnits, unitMinutes) / intervalMinutes);
             return fleet < 1 ? 1 : fleet;
+        }
+
+        // ===== Real-travel-time correction (issue: the game's path estimate undershoots real loop time) =====
+        // The correction is a DIMENSIONLESS factor = (real loop) / (estimated loop). It multiplies the estimate to
+        // recover the real value, and it is RT-INVARIANT (both quantities are frame-based, so a stretched clock cancels).
+
+        // COLD-START prior for a line with no measured loops yet. Live data from one city (2026-07) showed the undershoot
+        // rises with stop density (stops per loop-minute): ~1.7x on sparse lines, ~2.5x on stop-dense ones, plateauing
+        // near ~2.5x. Rough linear fit with an intercept near 1 (a hypothetical stopless express would match the
+        // estimate). RT-invariant: uses the FIXED vanilla unit->minute constant, not the live scale, so a slow-time mod
+        // does not move the prior. The caller clamps the result.
+        public static float DensityPriorRatio(int stops, float stableDurationUnits)
+        {
+            if (stops <= 0 || stableDurationUnits <= 1f) return 1f;
+            const float kVanillaUnitMinutes = 0.32958984f; // 675/2048, the vanilla 262144-frames/day scale (fixed reference)
+            float estMinutes = stableDurationUnits * kVanillaUnitMinutes;
+            if (estMinutes < 0.01f) return 1f;
+            float density = stops / estMinutes;            // stops per reference-minute (matches how the 7.7 slope was fit)
+            float r = 1.1f + 7.7f * density;               // linear fit over the OBSERVED density range (0.08-0.18)
+            // The live data PLATEAUED near ~2.5x — the undershoot stops climbing once stops are close — and we have no
+            // evidence above that, so a very dense line must NOT be linearly extrapolated toward the 4x safety clamp on a
+            // cold start. Cap the PRIOR at the observed plateau; live measurement (which may legitimately exceed it)
+            // takes over after a few loops. The caller still clamps.
+            return r > 2.6f ? 2.6f : r;
+        }
+
+        // Clamp a correction factor into a safe range. For FLEET sizing it is grow-only (>= 1): never cut a line's
+        // vehicle count below the estimate on a possibly-noisy low reading, which would strand passengers. For the
+        // schedule/offsets a genuinely fast line may legitimately post EARLIER than the estimate, so the floor is 0.5.
+        // Both are capped at 4x so a bad measurement can never blow the numbers up.
+        public static float ClampCorrection(float factor, bool forFleet)
+        {
+            if (float.IsNaN(factor) || float.IsInfinity(factor)) return 1f;
+            float lo = forFleet ? 1.0f : 0.5f;
+            const float hi = 4.0f;
+            if (factor < lo) return lo;
+            if (factor > hi) return hi;
+            return factor;
         }
 
         public static string FormatHm(int minuteOfDay)
