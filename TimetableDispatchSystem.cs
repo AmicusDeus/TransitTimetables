@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Colossal.Serialization.Entities;
 using Game;
 using Game.Common;
 using Game.Prefabs;
@@ -60,6 +61,13 @@ namespace TransitTimetables
         // bus re-derive its slot against the new scale on its next terminus visit.
         private uint m_TimebaseGen;
         private EntityQuery m_LineQuery;
+        // ALL transport lines (timetabled or not), for the one-time-per-load unbunching-residue repair. Separate from
+        // m_LineQuery because that one requires TimetableSchedule and so misses lines that were damaged by an old
+        // version and are no longer timetabled. See GlobalHealUnbunching.
+        private EntityQuery m_HealQuery;
+        // Set on every game/save load; the next OnUpdate runs the global unbunching heal once, then clears it. Init true
+        // so the sweep still fires if the system is created AFTER OnGameLoadingComplete already ran (mod-loads-late).
+        private bool m_GlobalHealPending = true;
         private readonly Dictionary<Entity, int> m_LastFleet = new Dictionary<Entity, int>();
         // Per line: vehicles the game flagged to retire that we're driving to the terminus before letting them go.
         private readonly Dictionary<Entity, HashSet<Entity>> m_PendingRetire = new Dictionary<Entity, HashSet<Entity>>();
@@ -147,6 +155,21 @@ namespace TransitTimetables
             // last timetabled line was deleted) so it can set TimetableInUse=false and let VehicleLimitSystem restore
             // the global vehicle cap. With RequireForUpdate the system stops on an empty query, latching the 8x uncap
             // on forever (and bleeding it into the next save loaded this session). The empty-query loop is trivial.
+
+            // ALL lines, for the unbunching-residue repair (no TimetableSchedule requirement — see GlobalHealUnbunching).
+            m_HealQuery = GetEntityQuery(new EntityQueryDesc
+            {
+                All = new[] { ComponentType.ReadWrite<TransportLine>(), ComponentType.ReadOnly<PrefabRef>() },
+                None = new[] { ComponentType.ReadOnly<Deleted>(), ComponentType.ReadOnly<Game.Tools.Temp>() },
+            });
+        }
+
+        // A save (or a new game) just finished loading: schedule the one-time global unbunching heal for the next tick,
+        // so an affected save is repaired on load even for lines that are no longer timetabled.
+        protected override void OnGameLoadingComplete(Purpose purpose, GameMode mode)
+        {
+            base.OnGameLoadingComplete(purpose, mode);
+            m_GlobalHealPending = true;
         }
 
         public override int GetUpdateInterval(SystemUpdatePhase phase) => 8;
@@ -156,6 +179,13 @@ namespace TransitTimetables
             Setting s = Mod.ActiveSetting;
             if (s == null)
                 return;
+
+            // One-time-per-load repair of the unbunching residue an old version of this mod left in saves.
+            if (m_GlobalHealPending)
+            {
+                m_GlobalHealPending = false;
+                GlobalHealUnbunching();
+            }
 
             uint frame = m_Sim.frameIndex;
             int nowMin = (int)(m_Time.normalizedTime * 1440f) % 1440;
@@ -1044,9 +1074,50 @@ namespace TransitTimetables
             }
         }
 
-        // Put the line's spacing behaviour back to the prefab default. Called for EVERY timetabled line (enabled or
-        // not), so it doubles as the one-time repair for a save damaged by a pre-v0.2.3 version that zeroed the field.
-        // Only writes when the value actually differs, so it is a no-op on a healthy line.
+        // ONE-TIME-PER-LOAD global repair of the unbunching residue an OLD version (before v0.2.2) of this mod left in
+        // saves. That version set TransportLine.m_UnbunchingFactor = 0 on the lines it managed (to stop buses idling
+        // mid-route). That field is SERIALIZED into the save and vanilla NEVER restores it, so an affected line — even
+        // after the mod is removed or the line is un-timetabled — leaves vehicles unable to unbunch: they depart a stop
+        // immediately regardless of spacing (RouteUtils.CalculateDepartureFrame multiplies the hold by this factor).
+        // RestoreUnbunching (below) only heals lines that STILL carry a TimetableSchedule (they're in m_LineQuery); this
+        // sweep covers EVERY line so a re-subscribe + load + save repairs any affected save with no per-line steps.
+        //
+        // CONSERVATIVE: only a factor of EXACTLY 0 (the value the old version wrote) is healed, restored to the LINE
+        // PREFAB's own m_DefaultUnbunchingFactor; a prefab whose default is genuinely 0 is skipped (nothing to restore).
+        // A no-op on a healthy save. Vanilla has no path to a 0 factor (it only ever inits from the prefab default) and
+        // no known mod writes one, so the sole theoretical collision — another mod deliberately setting 0 to disable
+        // unbunching — would also be reset here; that is an accepted, vanishingly rare trade-off.
+        private void GlobalHealUnbunching()
+        {
+            if (m_HealQuery.IsEmptyIgnoreFilter)
+                return;
+            NativeArray<Entity> lines = m_HealQuery.ToEntityArray(Allocator.Temp);
+            int healed = 0;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                Entity line = lines[i];
+                TransportLine tl = EntityManager.GetComponentData<TransportLine>(line);
+                if (tl.m_UnbunchingFactor != 0f)
+                    continue; // only the exact damage; leave healthy / custom values alone
+                Entity prefab = EntityManager.GetComponentData<PrefabRef>(line).m_Prefab;
+                if (!EntityManager.HasComponent<TransportLineData>(prefab))
+                    continue;
+                float def = EntityManager.GetComponentData<TransportLineData>(prefab).m_DefaultUnbunchingFactor;
+                if (def == 0f)
+                    continue; // this line type genuinely has no unbunching; 0 is correct, not damage
+                tl.m_UnbunchingFactor = def;
+                EntityManager.SetComponentData(line, tl);
+                healed++;
+            }
+            lines.Dispose();
+            if (healed > 0)
+                Mod.log.Info($"[SelfTest] global unbunching heal: restored {healed} line(s) from 0 to the prefab default " +
+                             "(repairing residue an older version of this mod wrote into the save)");
+        }
+
+        // Put the line's spacing behaviour back to the prefab default. Called for EVERY timetabled line (enabled or not),
+        // so it also repairs a still-timetabled line that a before-v0.2.2 version damaged. Only writes when the value
+        // actually differs from the prefab default, so it is a no-op on a healthy line.
         private void RestoreUnbunching(Entity line, TransportLine tl)
         {
             if (!EntityManager.HasComponent<PrefabRef>(line))
