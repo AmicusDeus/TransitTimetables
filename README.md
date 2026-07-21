@@ -2,7 +2,7 @@
 
 Real timetables for public transport in **Cities: Skylines II** — fixed departures, auto-sized fleets, and terminus timing points. Works for buses, trams, metros, trains, ferries and aircraft.
 
-**Paradox Mods:** https://mods.paradoxplaza.com/mods/150546
+**Paradox Mods:** https://mods.paradoxplaza.com/mods/150546/Windows
 
 ## What it does
 Turn any line into a scheduled service:
