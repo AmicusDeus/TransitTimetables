@@ -27,7 +27,7 @@ OPTIONAL SETTINGS (all off by default — a plain timetable needs none of them):
 Recommended: for accurate timetables at no cost, turn on "Realistic travel time" and leave the rest off; add "Provision fleet" only if you want the mod to also buy the buses that headway really needs.
 
 KNOWN ISSUES:
-- Unbunching residue on saves touched by an early version. Before v0.2.2 the mod set a line's "unbunching factor" to 0 on the lines it managed. That value is saved with your city and the base game never resets it, so on an affected save vehicles may leave a stop immediately without spacing out, and removing the mod leaves it that way. FIXED in v0.3.2: the mod now repairs every affected line automatically on load. If you're on an affected save, subscribe to v0.3.2 (or newer), load your city, then save — normal unbunching is restored, and you can keep or remove the mod afterwards.
+- "Vehicles no longer un-bunch after removing the mod." The mod writes two values into a line's save data — an "unbunching factor" (an early pre-v0.2.3 build), and a "vehicle interval" it uses to size the fleet. If you remove or disable the mod WITHOUT first switching a line's timetable off, those values can stay frozen in the save (the base game never resets them), so vehicles leave a stop immediately without spacing out. FIXED as of v0.3.2.2: the mod now repairs both automatically on load, for every line, and safely — the vehicle interval is rebuilt from the line's own settings, so a count you set by hand with "Assigned Vehicles" is preserved. To repair an affected save: subscribe to v0.3.2.2 (or newer), load your city, then save. Normal unbunching returns, and you can keep or remove the mod afterwards.
 
 Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
 
@@ -42,7 +42,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.3.2" />
+	<ModVersion Value="0.3.2.2" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -51,9 +51,13 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
+v0.3.2.2 — Complete the after-removal unbunching repair (fleet-interval residue)
+
+- FIX: v0.3.2 repaired only one of two things the mod leaves in a save. To size a line's fleet the mod writes a "vehicle interval" value into the line's data; if you remove/disable the mod WITHOUT first switching a line's timetable off, that value stays frozen in the save and the game keeps reading it, making it think buses are spaced far tighter than they are — which collapses the anti-bunching hold and a vehicle leaves the stop immediately no matter how close the next one is. This version clears that leftover automatically on load, for every line, and does it safely: it rebuilds the value from the line's own settings, so a vehicle count you set by hand with the "Assigned Vehicles" slider is preserved. To repair an affected save: subscribe, load your city, then save (you can remove the mod afterwards). No-op on a healthy save.
+
 v0.3.2 — Auto-repair for the old unbunching-factor residue
 
-- FIX: an early version of this mod (before v0.2.2) set a line's "unbunching factor" to 0 on the lines it managed, to stop buses idling mid-route. That value is saved with your city and the base game never resets it, so on an affected save — especially after removing the mod — vehicles could leave a stop immediately no matter how close the next one is. Current versions already repaired this while installed, but only on lines you still had timetabled. This version repairs EVERY line automatically on load: any line whose unbunching factor is 0 is reset to the game's default. So on an affected save just subscribe, load your city and save, and normal unbunching is restored (even for lines you no longer timetable). It only touches lines stuck at 0, so a healthy save is unaffected.
+- FIX: an early version of this mod (before v0.2.3) set a line's "unbunching factor" to 0 on the lines it managed, to stop buses idling mid-route. That value is saved with your city and the base game never resets it, so on an affected save — especially after removing the mod — vehicles could leave a stop immediately no matter how close the next one is. Current versions already repaired this while installed, but only on lines you still had timetabled. This version repairs EVERY line automatically on load: any line whose unbunching factor is 0 is reset to the game's default. So on an affected save just subscribe, load your city and save, and normal unbunching is restored (even for lines you no longer timetable). It only touches lines stuck at 0, so a healthy save is unaffected.
 
 v0.3.1 — Buses now always stop at the terminus (and optionally at every stop)
 

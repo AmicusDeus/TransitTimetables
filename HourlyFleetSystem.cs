@@ -127,6 +127,89 @@ namespace TransitTimetables
             return true;
         }
 
+        // Repair a leftover VehicleInterval RouteModifier this mod wrote DIRECTLY into a line's serialized buffer
+        // (TrySetLineFleet, to size the fleet) and never cleaned up when the user removed/disabled the mod WITHOUT first
+        // switching the line's timetable off (the only path that runs TryClearLineFleet). Left behind, that delta makes
+        // the game read a far-too-tight vehicle spacing, which collapses the anti-bunching departure hold to ~0
+        // (RouteUtils.CalculateDepartureFrame) — the "vehicles leave the stop immediately" residue in issue #7, and it
+        // also pins the line's vehicle count. The v0.3.2 unbunching-factor heal never touched this, which is why it
+        // didn't fix the report.
+        //
+        // SAFE by construction: we do NOT blind-zero the slot (the player's manual "Assigned Vehicles" count is ALSO a
+        // VehicleInterval modifier, so that would wipe it). Instead we recompute what the slot SHOULD be from the line's
+        // OWN active policies — exactly what vanilla RouteModifierInitializeSystem.RefreshRouteModifiers does, restricted
+        // to the VehicleInterval slot — and only rewrite when the current value differs. A line with a genuine
+        // policy-set count is set to that same value (no-op or corrected TO the player's value); a line with only our
+        // orphaned direct write reverts to whatever its policies dictate (automatic if none). Returns true if it
+        // rewrote the slot. Idempotent, and a no-op on an undamaged save.
+        public bool TryHealLeftoverFleetModifier(Entity line)
+        {
+            if (!EntityManager.HasBuffer<RouteModifier>(line) || !EntityManager.HasBuffer<Policy>(line))
+                return false;
+            DynamicBuffer<Policy> policies = EntityManager.GetBuffer<Policy>(line, isReadOnly: true);
+            RouteModifier want = default(RouteModifier);
+            for (int i = 0; i < policies.Length; i++)
+            {
+                Policy p = policies[i];
+                if ((p.m_Flags & PolicyFlags.Active) == 0 || !EntityManager.HasBuffer<RouteModifierData>(p.m_Policy))
+                    continue;
+                DynamicBuffer<RouteModifierData> md = EntityManager.GetBuffer<RouteModifierData>(p.m_Policy, isReadOnly: true);
+                for (int j = 0; j < md.Length; j++)
+                {
+                    RouteModifierData d = md[j];
+                    if (d.m_Type != RouteModifierType.VehicleInterval)
+                        continue;
+                    ApplyModifierData(ref want, d, SliderDelta(d, p.m_Adjustment, p.m_Policy));
+                }
+            }
+            DynamicBuffer<RouteModifier> mods = EntityManager.GetBuffer<RouteModifier>(line);
+            int idx = (int)RouteModifierType.VehicleInterval;
+            RouteModifier cur = mods.Length > idx ? mods[idx] : default(RouteModifier);
+            // Epsilon, not exact ==: the stored value was produced by a Burst job and this recompute runs managed, so a
+            // healthy (policy-set) line could differ by ~1 ULP. 1e-4 is far below the game's own 1f VehicleInterval
+            // change threshold (TransportLineSystem) yet far below any real orphan gap, so this is a true no-op on a
+            // healthy save while still catching every orphan.
+            if (System.Math.Abs(cur.m_Delta.x - want.m_Delta.x) < 1e-4f && System.Math.Abs(cur.m_Delta.y - want.m_Delta.y) < 1e-4f)
+                return false; // already what the line's policies dictate — no orphan to repair
+            while (mods.Length <= idx)
+                mods.Add(default(RouteModifier));
+            mods[idx] = want;
+            return true;
+        }
+
+        // Inline mirror of RouteModifierInitializeSystem.GetModifierDelta: lerp the modifier's range by the policy
+        // slider fraction. Local copy so the heal never depends on that vanilla system's lookups being current-frame.
+        private float SliderDelta(RouteModifierData d, float adjustment, Entity policy)
+        {
+            if (EntityManager.HasComponent<PolicySliderData>(policy))
+            {
+                PolicySliderData sl = EntityManager.GetComponentData<PolicySliderData>(policy);
+                float span = sl.m_Range.max - sl.m_Range.min;
+                float f = span == 0f ? 0f : (adjustment - sl.m_Range.min) / span;
+                f = f < 0f ? 0f : (f > 1f ? 1f : f);
+                return d.m_Range.min + (d.m_Range.max - d.m_Range.min) * f;
+            }
+            return d.m_Range.min;
+        }
+
+        // Inline mirror of RouteModifierInitializeSystem.AddModifierData (accumulate one policy's delta into the slot).
+        private static void ApplyModifierData(ref RouteModifier m, RouteModifierData d, float delta)
+        {
+            switch (d.m_Mode)
+            {
+                case ModifierValueMode.Relative:
+                    m.m_Delta.y = m.m_Delta.y * (1f + delta) + delta;
+                    break;
+                case ModifierValueMode.Absolute:
+                    m.m_Delta.x += delta;
+                    break;
+                case ModifierValueMode.InverseRelative:
+                    delta = 1f / System.Math.Max(0.001f, 1f + delta) - 1f;
+                    m.m_Delta.y = m.m_Delta.y * (1f + delta) + delta;
+                    break;
+            }
+        }
+
         // Stable line duration = sum of segment path durations + stop dwell per timed stop. Mirrors
         // VehicleCountSection.CalculateVehicleCountJob.CalculateStableDuration so our count math matches the game's.
         private float ComputeStableDuration(Entity line, TransportLineData tld)

@@ -241,7 +241,7 @@ namespace TransitTimetables
                 // (2) Leave TransportLine.m_UnbunchingFactor at the PREFAB DEFAULT — and heal it if an older version
                 // of this mod zeroed it.
                 //
-                // Until v0.2.2 this zeroed the factor so a vehicle wouldn't idle mid-route to self-space. That was a
+                // Until v0.2.3 this zeroed the factor so a vehicle wouldn't idle mid-route to self-space. That was a
                 // serious mistake: m_UnbunchingFactor is SERIALIZED into the save (Game.Routes/TransportLine), NOTHING
                 // in vanilla ever restores it (the only assignment is the component's ctor from the prefab default,
                 // which runs once at creation), and NO UI anywhere exposes it. So uninstalling the mod — or the mod
@@ -1074,7 +1074,7 @@ namespace TransitTimetables
             }
         }
 
-        // ONE-TIME-PER-LOAD global repair of the unbunching residue an OLD version (before v0.2.2) of this mod left in
+        // ONE-TIME-PER-LOAD global repair of the unbunching residue an OLD version (before v0.2.3) of this mod left in
         // saves. That version set TransportLine.m_UnbunchingFactor = 0 on the lines it managed (to stop buses idling
         // mid-route). That field is SERIALIZED into the save and vanilla NEVER restores it, so an affected line — even
         // after the mod is removed or the line is un-timetabled — leaves vehicles unable to unbunch: they depart a stop
@@ -1092,31 +1092,46 @@ namespace TransitTimetables
             if (m_HealQuery.IsEmptyIgnoreFilter)
                 return;
             NativeArray<Entity> lines = m_HealQuery.ToEntityArray(Allocator.Temp);
-            int healed = 0;
+            int factorHealed = 0, fleetHealed = 0;
             for (int i = 0; i < lines.Length; i++)
             {
                 Entity line = lines[i];
+
+                // (1) Unbunching-factor residue (a pre-v0.2.3 version wrote 0f): restore to the prefab default. Only the
+                // exact damage (== 0) is touched; a healthy/custom value and a line type whose default is 0 are left alone.
                 TransportLine tl = EntityManager.GetComponentData<TransportLine>(line);
-                if (tl.m_UnbunchingFactor != 0f)
-                    continue; // only the exact damage; leave healthy / custom values alone
-                Entity prefab = EntityManager.GetComponentData<PrefabRef>(line).m_Prefab;
-                if (!EntityManager.HasComponent<TransportLineData>(prefab))
-                    continue;
-                float def = EntityManager.GetComponentData<TransportLineData>(prefab).m_DefaultUnbunchingFactor;
-                if (def == 0f)
-                    continue; // this line type genuinely has no unbunching; 0 is correct, not damage
-                tl.m_UnbunchingFactor = def;
-                EntityManager.SetComponentData(line, tl);
-                healed++;
+                if (tl.m_UnbunchingFactor == 0f && EntityManager.HasComponent<PrefabRef>(line))
+                {
+                    Entity prefab = EntityManager.GetComponentData<PrefabRef>(line).m_Prefab;
+                    if (EntityManager.HasComponent<TransportLineData>(prefab))
+                    {
+                        float def = EntityManager.GetComponentData<TransportLineData>(prefab).m_DefaultUnbunchingFactor;
+                        if (def != 0f)
+                        {
+                            tl.m_UnbunchingFactor = def;
+                            EntityManager.SetComponentData(line, tl);
+                            factorHealed++;
+                        }
+                    }
+                }
+
+                // (2) Leftover fleet (VehicleInterval) RouteModifier — the actual cause of issue #7's "vehicles leave
+                // immediately" after a plain uninstall. Skip lines we are ACTIVELY managing (an enabled timetable): the
+                // dispatch loop re-asserts their modifier this same tick, and TryHealLeftoverFleetModifier is safe by
+                // recomputing from the line's own policies (never clobbers a player's manual vehicle count).
+                bool managed = EntityManager.HasComponent<TimetableSchedule>(line)
+                    && EntityManager.GetComponentData<TimetableSchedule>(line).m_Enabled;
+                if (!managed && m_Fleet.TryHealLeftoverFleetModifier(line))
+                    fleetHealed++;
             }
             lines.Dispose();
-            if (healed > 0)
-                Mod.log.Info($"[SelfTest] global unbunching heal: restored {healed} line(s) from 0 to the prefab default " +
-                             "(repairing residue an older version of this mod wrote into the save)");
+            if (factorHealed > 0 || fleetHealed > 0)
+                Mod.log.Info($"[SelfTest] global heal on load: unbunching factor restored on {factorHealed} line(s), " +
+                             $"leftover fleet modifier cleared on {fleetHealed} line(s) (repairing save residue from an older version)");
         }
 
         // Put the line's spacing behaviour back to the prefab default. Called for EVERY timetabled line (enabled or not),
-        // so it also repairs a still-timetabled line that a before-v0.2.2 version damaged. Only writes when the value
+        // so it also repairs a still-timetabled line that a before-v0.2.3 version damaged. Only writes when the value
         // actually differs from the prefab default, so it is a no-op on a healthy line.
         private void RestoreUnbunching(Entity line, TransportLine tl)
         {
