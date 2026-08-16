@@ -203,6 +203,20 @@ namespace TransitTimetables
         // cycle and stranded for a whole interval. A frame (not a minute) so comparisons are monotonic across midnight.
         // Keyed by vehicle Entity (globally unique); pruned each tick against m_LiveVehScratch so despawned buses drop.
         private readonly Dictionary<Entity, uint> m_RunSlotFrame = new Dictionary<Entity, uint>();
+        // WHICH POSTED ENTRY each vehicle is running, as an absolute schedule minute. A sibling of m_RunSlotFrame,
+        // written only on the terminus "asg" path, and read only to stop two vehicles of one line being handed the
+        // SAME departure (issue #16).
+        //
+        // Why a second dictionary instead of comparing m_RunSlotFrame values: two vehicles assigned to the same
+        // posted minute do NOT get the same frame. Each is assigned on a different 8-frame tick, so their slot
+        // frames differ by however many ticks elapsed between them - up to a full minute. An equality test on
+        // frames would therefore never fire, and a tolerance test needs a threshold that stops separating
+        // "same entry" from "adjacent entry" once the headway is short. The posted minute IS the thing being
+        // claimed, so it is what gets stored.
+        //
+        // Catch-up slots are deliberately NOT recorded: they are off-grid by construction (frame + cuDwell), not a
+        // posted entry, and that path already self-de-duplicates through m_LastSlotFrame.
+        private readonly Dictionary<Entity, int>  m_RunSlotMinute = new Dictionary<Entity, int>();
         private readonly HashSet<Entity> m_LiveVehScratch = new HashSet<Entity>();
 
         // Minimum stop dwell (minutes) for a bus that arrives ON its slot or LATE, so it still boards/offloads instead
@@ -281,6 +295,13 @@ namespace TransitTimetables
         // reads the SAME walk the vehicles are held to; deriving departure-minus-X in the UI would be the second
         // independent derivation that once put the board ~45 minutes from the buses.
         private readonly Dictionary<Entity, int>    m_PostedArrival = new Dictionary<Entity, int>();   // layover waypoint -> arrival minutes
+        // The RETURN to the terminus: terminus waypoint -> the completed circuit in minutes. m_PostedOffset holds 0 for
+        // the terminus, which is its DEPARTURE and is what the board wants (a board lists departures). A vehicle on the
+        // inbound leg carries Target == this same waypoint, so anything reading that 0 as an ARRIVAL time reports the
+        // run's own departure as the next stop's due time. Deliberately NOT folded into m_PostedArrival: that one is
+        // documented as "the active layover waypoint only", and the prune comment already leans on that meaning. One
+        // field, two contracts, is how the measurement-cliff latch happened.
+        private readonly Dictionary<Entity, int>    m_PostedTerminusArrival = new Dictionary<Entity, int>();
         // Same contract for the vehicle count: the panel shows the number the dispatch SETTLED on, after the cap, the
         // shrink hysteresis and the stability gate. Recomputing it in the UI (as it did) skipped all three, so the
         // panel could advertise a count the dispatch was actively refusing to apply.
@@ -299,6 +320,13 @@ namespace TransitTimetables
         private const int   kFleetCap        = 150;
         // Hard ceiling on how much of a stop's offset may extend the hold bound (minutes). See HoldStop's clamp.
         private const int   kMaxHoldSlackMinutes = 15;
+        // How many grid entries past the first the terminus assignment may walk when the nearer ones are already
+        // owned by other vehicles of the same line. Each step costs the vehicle one more headway of waiting, which
+        // is the honest price of "you are on the departure after theirs", so this is deliberately small: it bounds
+        // how long a contended bus can be asked to wait, not how many buses can be handled. Three covers a terminus
+        // holding four of a line's vehicles at once; beyond that the bus is left unassigned and picks up a slot on
+        // its next visit, which is the safe direction.
+        private const int   kMaxSlotSteps = 3;
 
         protected override void OnCreate()
         {
@@ -463,7 +491,7 @@ namespace TransitTimetables
             m_Fpm = m_Timebase.FramesPerMinute;
             m_Um = m_Timebase.UnitMinutes;
             uint tbGen = m_Timebase.RegimeGeneration;
-            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); m_LastSlotFrame.Clear(); }
+            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); m_RunSlotMinute.Clear(); m_LastSlotFrame.Clear(); }
 
             // Clean-uninstall button (Options): one-shot wipe of every mod component + mutation, then bail this tick.
             // Runs regardless of the master switch, so a paused mod can still be cleaned out.
@@ -1097,6 +1125,7 @@ namespace TransitTimetables
             PruneToLive(m_RampSince, m_LiveScratch, m_StaleScratch);
             // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
             PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
+            PruneToLive(m_RunSlotMinute, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehTerminusDepart, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehStopHold, m_LiveVehScratch, m_StaleScratch);
@@ -1118,6 +1147,12 @@ namespace TransitTimetables
                 foreach (Entity wpKey in m_PostedArrival.Keys)
                     if (!EntityManager.Exists(wpKey)) m_StaleScratch.Add(wpKey);
                 for (int i = 0; i < m_StaleScratch.Count; i++) m_PostedArrival.Remove(m_StaleScratch[i]);
+                // The terminus-arrival sibling is waypoint-keyed on the same terms. A MOVED terminus is already
+                // self-cleaned by the walk's j>=1 Remove; this catches waypoints deleted outright between walks.
+                m_StaleScratch.Clear();
+                foreach (Entity wpKey in m_PostedTerminusArrival.Keys)
+                    if (!EntityManager.Exists(wpKey)) m_StaleScratch.Add(wpKey);
+                for (int i = 0; i < m_StaleScratch.Count; i++) m_PostedTerminusArrival.Remove(m_StaleScratch[i]);
             }
 
             lines.Dispose();
@@ -1286,6 +1321,12 @@ namespace TransitTimetables
                 // Remove keeps a moved/cleared layover from leaving a stale arrival behind (self-cleans in one walk).
                 if (layAtThis > 0) m_PostedArrival[wp] = offArr;
                 else m_PostedArrival.Remove(wp);
+                // Same self-cleaning rule for the terminus arrival, and it is load-bearing rather than tidy: if the
+                // player MOVES the terminus, the old waypoint still exists, so the periodic stale scan never collects
+                // it, and a vehicle inbound to what is now an ordinary stop would be given a whole lap as its offset.
+                // j==0 is the current terminus and is rewritten after the walk. (Waypoints are route-owned, so this
+                // cannot delete another line's entry even where two lines share a physical stop.)
+                if (j >= 1) m_PostedTerminusArrival.Remove(wp);
                 // NO MONOTONIC FLOOR HERE — one was added in v0.4.1 and REMOVED again; do not put it back.
                 // The intent was sound (a later stop cannot legitimately be posted earlier than an earlier one), but a
                 // floor is a RUNNING MAXIMUM: a single stop with a badly inflated measured value propagates that value
@@ -1323,8 +1364,43 @@ namespace TransitTimetables
                 { offUnits += stopDur; timedPassed++; } // ...and step the ladder, in lockstep with the estimate
             }
 
+            // CLOSE THE CIRCUIT. The last iteration added the leg back to the terminus, so offUnits now spans a whole
+            // lap — a value the walk used to compute and throw away. Publish it as the terminus's ARRIVAL, through the
+            // SAME expression the stop offsets used above (same ladder, same scale, same layover carry), so it can
+            // never disagree with the board or with what the vehicles are held to. Deriving it separately from the
+            // measured loop would be the second independent derivation that once put the board ~45 minutes from the
+            // buses. Not published when the walk produced nothing, so a consumer can tell "unknown" from "zero".
+            {
+                Entity termWp = wps[start].m_Waypoint;
+                int loopArr = (int)System.Math.Round(offUnits * m_Um * shrinkScale + timedPassed * perStopExtraMin) + layoverCarry;
+                if (termWp != Entity.Null && loopArr > 0) m_PostedTerminusArrival[termWp] = loopArr;
+            }
+
             if (diag != null)
                 Mod.log.Info(diag.ToString());
+        }
+
+        // Is this posted entry already owned by ANOTHER live vehicle of the same line? The whole of issue #16 in
+        // one test. `self` is skipped so a vehicle re-evaluating its own visit can never be rejected against its
+        // own claim, which is the other half of the slotFromThisVisit guarantee above.
+        //
+        // Scans the line's own roster rather than consulting m_LastSlotFrame, which looks like the natural record
+        // and is not: that field holds only the SINGLE LATEST claim, so with three buses (A takes 10:20, B is
+        // pushed to 10:40) it reads 10:40, and a third bus asking about 10:20 is told it is free — duplicating A.
+        // It is also load-bearing for the catch-up detector, whose write can regress it to a past frame. One field,
+        // two contracts, is how the measurement-cliff latch happened.
+        private bool SlotMinuteClaimed(Entity self, int minute, HashSet<Entity> lineVehicles)
+        {
+            if (lineVehicles == null)
+                return false;
+            foreach (Entity other in lineVehicles)
+            {
+                if (other == self)
+                    continue;
+                if (m_RunSlotMinute.TryGetValue(other, out int owned) && owned == minute)
+                    return true;
+            }
+            return false;
         }
 
         // Hold one stop's in-service boarding bus to its scheduled clock departure (the schedule shifted by offMin), or
@@ -1429,6 +1505,11 @@ namespace TransitTimetables
                                 // Depart a min-dwell from NOW (like an on-slot/late bus): a near-future frame, not `frame`.
                                 slotFrame = frame + (uint)(cuDwell * m_Fpm);
                                 m_RunSlotFrame[veh] = slotFrame;
+                                // DROP any posted-entry claim. A catch-up slot is off-grid by construction, so this
+                                // vehicle no longer owns an entry — and leaving the previous run's claim behind would
+                                // reserve a departure nobody is running, blocking the next bus out of it for a whole
+                                // headway. Remove, never write: the catch-up minute is not a posted entry to claim.
+                                m_RunSlotMinute.Remove(veh);
                                 m_LastSlotFrame[line] = prevFrame > 0 ? (uint)prevFrame : frame;   // claim the slot we just covered
                                 // Clear the lap flag so the reassignment gate above ((lapped && frame >= slotFrame)) does
                                 // NOT re-fire while this bus is still boarding out its catch-up dwell. Without this, the
@@ -1466,18 +1547,77 @@ namespace TransitTimetables
 
                     if (!caughtUp)
                     {
-                        if (untilNext >= 0 && untilNext <= maxInterval)
+                        // ONE VEHICLE PER POSTED ENTRY (issue #16).
+                        //
+                        // Vanilla enforces this implicitly and we relied on it without knowing: a stop exposes ONE
+                        // BoardingVehicle, BeginBoarding refuses a second vehicle while the incumbent still carries
+                        // the Boarding flag, and OUR OWN hold is what keeps that flag set until the incumbent's
+                        // minute. So by the time another bus can board here, the clock has passed the slot and
+                        // NextDeparture returns a later one.
+                        //
+                        // A concurrent-boarding mod rotates BoardingVehicle among several buses at once, which
+                        // removes that exclusion. We tick every 8 frames against ~182 frames per minute, so ~23
+                        // assignment opportunities fall inside one minute: the rotation shows us bus A, then bus B,
+                        // and both compute the same NextDeparture and are handed the same departure. They then run
+                        // coupled for the whole loop and the next entry goes unserved.
+                        //
+                        // Deliberately NOT conditional on that mod being installed: there is a narrow vanilla window
+                        // too, because NextDeparture tests `t >= nowMinute`, so a successor that begins boarding
+                        // while the clock is still inside the departed slot's own minute anchors to the entry just
+                        // used. Rare, but the same bug.
+                        int cand = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin);
+                        bool free = false;
+                        // Bounded walk forward through the grid.
+                        //
+                        // THE WINDOW HAS TO GROW WITH THE WALK, and the first version of this got it wrong in a way
+                        // that made the whole feature inert. The acceptance test was the untouched `u <= maxInterval`.
+                        // On a uniform headway H that IS maxInterval: the first candidate is at most H away, the next
+                        // entry is a further H, so the stepped candidate always exceeded the bound and every contended
+                        // bus fell through to the clash path and ran with no timetable at all. Reported live by
+                        // GameBurrow, who observed exactly that and asked for the next free slot instead — which is
+                        // what this was always supposed to do.
+                        //
+                        // So the bound is maxInterval per STEP TAKEN. Step 0 keeps the historical window exactly;
+                        // each accepted step buys one more headway, because "you are on the departure after the one
+                        // another bus holds" legitimately means waiting that much longer. Still hard-bounded: at most
+                        // kMaxSlotSteps extra headways, so this can never become an open-ended wait.
+                        int stepsTaken = 0;
+                        for (; stepsTaken <= kMaxSlotSteps; stepsTaken++)
+                        {
+                            int u = cand - nowMin;
+                            if (u < 0 || u > maxInterval * (stepsTaken + 1)) break;
+                            if (!SlotMinuteClaimed(veh, cand, lineVehicles)) { untilNext = u; free = true; break; }
+                            int nxt = ScheduleMath.NextDeparture(s, sch, customSch, sched, cand + 1);
+                            if (nxt <= cand) break;   // NextDeparture's own "return first" fallback: stop walking
+                            cand = nxt;
+                        }
+                        if (free)
                         {
                             slotFrame = frame + (uint)(untilNext * m_Fpm);
                             m_RunSlotFrame[veh] = slotFrame;
+                            m_RunSlotMinute[veh] = cand;                 // the entry this vehicle now owns
                             // Claim this (future) slot so the next bus doesn't read it as missed. Monotonic: never regress.
                             if (!m_LastSlotFrame.TryGetValue(line, out uint cur) || slotFrame > cur) m_LastSlotFrame[line] = slotFrame;
                             slotSrc = "asg";
+                        }
+                        else if (untilNext >= 0 && untilNext <= maxInterval)
+                        {
+                            // CLASH: every entry inside the window is already owned by another vehicle on this line.
+                            // Write NOTHING and leave — no slot, no claim, no departure frame. This resolves itself
+                            // within one headway: once the incumbent's minute passes, NextDeparture returns the
+                            // following entry and this bus is assigned cleanly on a later tick.
+                            //
+                            // Deliberately NOT the "edge" branch below. That path clears the slot and makes the
+                            // vehicle dwelling, which force-departs it on a min-dwell — the bunching this whole
+                            // change exists to prevent, arriving through a different door.
+                            diag?.Append(" [off").Append(offMin).Append(tag).Append(":clash]");
+                            return;
                         }
                         else
                         {
                             // No usable slot soon (operating-window edge): don't latch a far/garbage slot — release now.
                             m_RunSlotFrame.Remove(veh);
+                            m_RunSlotMinute.Remove(veh);
                             slotFrame = frame;
                             slotSrc = "edge";
                         }
@@ -1538,10 +1678,27 @@ namespace TransitTimetables
             // freeze at an intermediate kerb with passengers aboard — exactly the v0.2.1 bug, re-entered through the
             // front door. The cap bounds the worst case while still covering legitimate far-stop holds.
             // The terminus keeps the strict one-headway bound: its offset is 0 and its slot is grid-derived.
+            //
+            // EXCEPT when this vehicle owns a grid entry further out because the nearer ones were taken. A flat
+            // one-headway bound would clamp exactly that hold and force-depart the bus on the very next tick — the
+            // assignment path would keep handing out stepped slots and this net would keep throwing them away, so
+            // the feature would look like it did nothing while quietly bunching the buses it was meant to separate.
+            // Note the tick that assigns is not the tick that clamps: a later pass takes the `keep` branch and never
+            // recomputes untilNext, so the bound has to be derivable from stored state, which is what the claimed
+            // minute is for. The wait it authorises is bounded by construction — the entry came from the grid walk
+            // above, which cannot exceed kMaxSlotSteps headways.
             // The layover stop's own X is a LEGITIMATE wait on top of the structural bound — an on-time vehicle there
             // holds for X plus its earliness by design — so it gets its own bound term rather than competing with the
             // slack cap. The travel part of the slack is offMin MINUS the layover (offMin at that stop includes X).
-            int holdBound = isTerminus ? maxInterval
+            int termBound = maxInterval;
+            if (isTerminus && m_RunSlotMinute.TryGetValue(veh, out int ownedMin))
+            {
+                // Minutes this vehicle is legitimately waiting for the entry it owns, plus the usual rounding slack.
+                int ownedWait = ownedMin - nowMin;
+                if (ownedWait > termBound) termBound = System.Math.Min(ownedWait, maxInterval * (kMaxSlotSteps + 1));
+                termBound += kMaxHoldSlackMinutes;
+            }
+            int holdBound = isTerminus ? termBound
                 : maxInterval + System.Math.Min(offMin - layoverAtStop, kMaxHoldSlackMinutes) + layoverAtStop;
             bool overrun = until > holdBound;
             bool hold = dframes > 0 && !overrun;
@@ -1549,7 +1706,7 @@ namespace TransitTimetables
             // once releases stop: a run of these at early stops means the additive ladder is wrong for that line.
             // The layover term is exempted, or a working layover longer than one headway would log "residual shape
             // error" on every single visit — a false alarm on the feature's normal path.
-            if (until > maxInterval + layoverAtStop && frame - m_LastClampWarn >= 16384u)
+            if (until > holdBound + layoverAtStop && frame - m_LastClampWarn >= 16384u)
             {
                 m_LastClampWarn = frame;
                 Mod.log.Warn($"[SelfTest] long hold: until={until}m exceeds headway={maxInterval}m at off={offMin} " +
@@ -1803,8 +1960,9 @@ namespace TransitTimetables
             m_LastFleet.Clear(); m_PendingRetire.Clear(); m_LapServed.Clear(); m_LapFront.Clear();
             m_LineLoopEma.Clear(); m_LineLoopSamples.Clear(); m_LineLoopMin.Clear(); m_LineRejectStreak.Clear();
             m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear(); m_RampSince.Clear();
-            m_RunSlotFrame.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
+            m_RunSlotFrame.Clear(); m_RunSlotMinute.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
             m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedArrival.Clear(); m_PostedFleet.Clear();
+            m_PostedTerminusArrival.Clear();
             Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
                          "Save your city; the mod can now be removed with no residue.");
         }
@@ -2098,11 +2256,28 @@ namespace TransitTimetables
                 return false;                                  // no slot: not on the timetable yet
 
             // The stop it is heading for. Same offset table the board and the holds use.
-            int offMin = 0;
-            if (EntityManager.HasComponent<Target>(veh))
+            //
+            // HONOUR THE LOOKUP. This used to discard TryGetValue's result, so a MISS left offMin at 0 and was
+            // indistinguishable from a real 0 — and the terminus's real offset IS 0. Target is not always a posted
+            // waypoint: ReturnToDepot points it at the depot building, and the walk has not run for a line in its
+            // first tick after a load. Reporting nothing beats reporting a number we did not compute.
+            Entity wp = EntityManager.HasComponent<Target>(veh)
+                ? EntityManager.GetComponentData<Target>(veh).m_Target : Entity.Null;
+            if (wp == Entity.Null || !m_PostedOffset.TryGetValue(wp, out int offMin))
+                return false;
+            // EN ROUTE the scheduled event is the stop's ARRIVAL; once boarding it is the DEPARTURE. They differ at
+            // exactly two places, and both publish an arrival from the walk: the layover stop (arrival + X) and the
+            // terminus (departure 0, arrival a whole lap). Reading the terminus's 0 while inbound is what printed
+            // "due at 02:00, running 277 min behind" on a lap that had itself departed at 02:00 — the due time was
+            // the run's own departure and the lateness was simply its elapsed lap. A vehicle boarding AT the terminus
+            // is a different case and already correct: its slot has been reassigned to its next departure, so 0 is
+            // exactly right and the substitution must not apply.
+            bool boarding = EntityManager.HasComponent<PublicTransport>(veh)
+                && (EntityManager.GetComponentData<PublicTransport>(veh).m_State & PublicTransportFlags.Boarding) != 0;
+            if (!boarding)
             {
-                Entity wp = EntityManager.GetComponentData<Target>(veh).m_Target;
-                if (wp != Entity.Null) m_PostedOffset.TryGetValue(wp, out offMin);
+                if (m_PostedTerminusArrival.TryGetValue(wp, out int termArr)) offMin = termArr;
+                else if (m_PostedArrival.TryGetValue(wp, out int layArr)) offMin = layArr;
             }
             long sched = (long)slotFrame + (long)(offMin * m_Fpm);
             uint frame = m_Sim.frameIndex;
