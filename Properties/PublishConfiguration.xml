@@ -9,7 +9,13 @@
 	<LongDescription>
 Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
 
-WHAT'S NEW IN 0.5.3.1:
+WHAT'S NEW IN 0.5.4:
+
+- FIX: with Concurrent Bus Boarding installed, two buses at the same stop could be given the same departure time. Each vehicle now checks whether another on its line already holds a departure and takes the next free one instead. Thanks to GameBurrow for the report and the diagnosis.
+- FIX: selecting a vehicle on its way back to the terminus reported it as enormously late, often by the length of a whole trip, when it was running perfectly normally. Its due time there is now the completed round trip rather than its own departure time.
+- The two night service settings now say plainly that they only apply to lines set to run both day and night. Translated into all 11 languages.
+
+Earlier in 0.5.3.1:
 
 - Scheduled layovers. Pick a stop on a timetabled line, press "Set as Terminus B", and give it a number of minutes. Vehicles wait there before carrying on, and every stop after it is posted that many minutes later, so the board still matches what the vehicles do.
 - The wait is measured from the SCHEDULED arrival, not the actual one, so a vehicle running late waits less and a badly delayed one does not wait at all. The stop absorbs delay instead of adding to it, which is what a real timing point is for.
@@ -126,7 +132,7 @@ Disclaimer: Made and maintained with Claude Code Opus 4.8, Opus 5 and Fable 5 mo
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.5.3.1" />
+	<ModVersion Value="0.5.4" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -139,15 +145,13 @@ Disclaimer: Made and maintained with Claude Code Opus 4.8, Opus 5 and Fable 5 mo
 	    eat the 5000-character limit. Replace this block wholesale on every version bump. -->
 	<ChangeLog>
 
-v0.5.3.1 [BETA] - Scheduled layovers, and a localization fix
+v0.5.4 [BETA] - Three fixes
 
-- FIX: most of the panel was showing English no matter what language you play in. The mod has shipped translations for the vehicle status readout, the loop measurement lines and the terminus warnings, but those particular strings were never handed to the game's localization system, so every language quietly fell back to English. They are wired up now, and the wiring is derived from the string table rather than kept by hand, so a string cannot be missed this way again.
+- FIX: with Concurrent Bus Boarding installed, two buses at the same stop could be given the same departure time. A stop in this game has one boarding slot, and in the base game that single slot is what keeps a second bus from starting to board while the first is still being held for its departure. Concurrent Bus Boarding shares that slot between buses, which removed the protection the timetable was relying on. Each vehicle now checks whether another vehicle on its line already holds a departure and takes the next free one instead. Thanks to GameBurrow for the report and for diagnosing the cause.
 
-- NEW: a scheduled layover. Pick a stop on a timetabled line, press Set as Terminus B, and give it a number of minutes. Vehicles wait there before continuing, and every stop after it is posted that many minutes later, so the board still matches what the vehicles do. The wait is measured from the SCHEDULED arrival, so a vehicle running late waits less and a badly delayed one does not wait at all: the stop absorbs delay rather than adding to it. Departures from the stop stay put while arrivals move.
+- FIX: selecting a vehicle on its way back to the terminus reported it as enormously late, often by the length of a whole trip, when it was running perfectly normally. The panel was measuring it against its own departure time from the terminus instead of its arrival back there. Its due time is now the completed round trip. This affected every vehicle on the last leg of every trip, so on a short route it showed up as a smaller delay that looked believable.
 
-- The layover stop is always called at, even when nobody is waiting there, and it never doubles as the terminus. If its stop is deleted or the route stops serving it, the line panel says so and offers to remove it.
-
-- Note: a layover makes the round trip longer, so a line needs a few more vehicles to keep the same interval. That is only accounted for when Provision fleet for real travel time is on. The layover itself is never counted as the route being slower, so it does not distort the measured loop time.
+- The two night service settings now say plainly that they only apply to lines set to run both day and night. Lines set to day only or night only are governed by the game itself, which fixes its own night at 22:00 to 06:00 and gives a day-only line no vehicles at all during those hours. No mod can change that, so a different value here will not extend such a line's service. Translated into all 11 languages.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
