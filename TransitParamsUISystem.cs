@@ -15,7 +15,7 @@ namespace TransitTimetables
     // Backs both timetable UIs, driven by the current tool selection:
     //   * A transport LINE is selected  -> the timetable editor (injected into the native line info panel).
     //   * A STOP is selected            -> the departure board (every line's next departures from this stop), shown
-    //                                      in the floating panel, which auto-opens; plus "set as terminus".
+    //                                      in the floating panel, which auto-opens; plus Terminal A/B selection.
     public partial class TransitParamsUISystem : UISystemBase
     {
         private const string Group = "TransitParams";
@@ -34,7 +34,8 @@ namespace TransitTimetables
         private string m_SelTtNext = "";
         private string m_SelVehInfo = "";           // selected VEHICLE: late/early + next stop time (community request)
         private string m_SelTtRealInfo = "";        // honest real-travel-time line (real loop vs estimate + fleet consequence)
-        private int m_SelTtTerminus;                // 0 chosen+usable, 1 never chosen, 2 chosen but no longer usable
+        private int m_SelTtTerminus;                // Terminal A: 0 chosen+usable, 1 fallback, 2 chosen but unusable
+        private int m_SelTtTerminalB;               // 0 absent, 1 active, 2 unusable, 3 duplicates effective A
         private int m_SelTtLayover;                 // 0 none, 1 active, 2 blocked (it IS the terminus), 3 orphaned (off-route)
         private int m_SelTtLayoverMin;              // the configured X, so the panel can name it while warning
         private int m_SelSchedule = 2;              // RouteSchedule: 0=Day, 1=Night, 2=DayAndNight (which intervals apply)
@@ -42,7 +43,7 @@ namespace TransitTimetables
         private GetterValueBinding<bool> m_SelHasB, m_SelTtEnabledB;
         private GetterValueBinding<int> m_SelTtFirstB, m_SelTtPeakB, m_SelTtOffPeakB, m_SelTtNightB, m_SelTtIntervalB, m_SelTtFleetB, m_SelScheduleB;
         private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB, m_SelTtRealInfoB, m_SelVehInfoB;
-        private GetterValueBinding<int> m_SelTtTerminusB;
+        private GetterValueBinding<int> m_SelTtTerminusBinding, m_SelTtTerminalBBinding;
         private GetterValueBinding<int> m_SelTtLayoverB, m_SelTtLayoverMinB;
         // Per-line custom peak (PR #5): enabled + interval + two hour windows.
         private bool m_SelCustomPeakEnabled;
@@ -105,7 +106,8 @@ namespace TransitTimetables
             m_SelTtFleetB = new GetterValueBinding<int>(Group, "selTtFleet", () => m_SelTtFleet);
             m_SelTtNextB = new GetterValueBinding<string>(Group, "selTtNext", () => m_SelTtNext ?? "");
             m_SelTtRealInfoB = new GetterValueBinding<string>(Group, "selTtRealInfo", () => m_SelTtRealInfo ?? "");
-            m_SelTtTerminusB = new GetterValueBinding<int>(Group, "selTtTerminus", () => m_SelTtTerminus);
+            m_SelTtTerminusBinding = new GetterValueBinding<int>(Group, "selTtTerminus", () => m_SelTtTerminus);
+            m_SelTtTerminalBBinding = new GetterValueBinding<int>(Group, "selTtTerminalB", () => m_SelTtTerminalB);
             m_SelTtLayoverB = new GetterValueBinding<int>(Group, "selTtLayover", () => m_SelTtLayover);
             m_SelTtLayoverMinB = new GetterValueBinding<int>(Group, "selTtLayoverMin", () => m_SelTtLayoverMin);
             m_SelVehInfoB = new GetterValueBinding<string>(Group, "selVehInfo", () => m_SelVehInfo ?? "");
@@ -133,7 +135,8 @@ namespace TransitTimetables
             AddBinding(m_SelTtFleetB);
             AddBinding(m_SelTtNextB);
             AddBinding(m_SelTtRealInfoB);
-            AddBinding(m_SelTtTerminusB);
+            AddBinding(m_SelTtTerminusBinding);
+            AddBinding(m_SelTtTerminalBBinding);
             AddBinding(m_SelTtLayoverB);
             AddBinding(m_SelTtLayoverMinB);
             AddBinding(m_SelVehInfoB);
@@ -170,11 +173,16 @@ namespace TransitTimetables
             AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakEnd1", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_End1 = (ushort)Clamp(x, 0, 23))));
             AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakStart2", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_Start2 = (ushort)Clamp(x, 0, 23))));
             AddBinding(new TriggerBinding<int>(Group, "setSelCustomPeakEnd2", v => MutateCustomPeak(v, (ref CustomPeakSchedule c, int x) => c.m_End2 = (ushort)Clamp(x, 0, 23))));
-            // Terminus scopes: one board row (its own line at its own platform), the open line, or every line here.
+            // Terminal A scopes: one board row (its own line at its own platform), the open line, or every line here.
             AddBinding(new TriggerBinding<int>(Group, "setTerminusRow", SetTerminusRow));
             AddBinding(new TriggerBinding(Group, "setSelTerminusAll", () => SetSelectedStopAsTerminus(Entity.Null)));
             AddBinding(new TriggerBinding(Group, "setSelTerminusLine", () => { if (m_LastLine != Entity.Null) SetSelectedStopAsTerminus(m_LastLine); }));
-            // Layover ("Terminus B"): give one board row's stop a scheduled layover of N minutes for its line, sent as
+            // Optional Terminal B: selected board row sets/clears its own line; the line panel can always clear it,
+            // including when the saved stop was deleted and therefore no longer has a board row.
+            AddBinding(new TriggerBinding<int>(Group, "setTerminalBRow", SetTerminalBRow));
+            AddBinding(new TriggerBinding<int>(Group, "clearTerminalBRow", ClearTerminalBRow));
+            AddBinding(new TriggerBinding(Group, "clearSelTerminalB", () => ClearLineTerminalB(m_LastLine)));
+            // Scheduled layover: give one board row's stop a dwell of N minutes for its line, sent as
             // the ABSOLUTE value (the stepper idiom every other numeric trigger uses); 0 clears it.
             AddBinding(new TriggerBinding<int, int>(Group, "setLayoverRow", SetLayoverRow));
             // Clear the OPEN line's layover from the line panel. The stop board can only offer removal on a row it
@@ -242,7 +250,21 @@ namespace TransitTimetables
             SetLineTerminus(m_BoardRows[i].line, m_BoardRows[i].stop);
         }
 
-        // Give one board row's stop a scheduled layover ("Terminus B") of `minutes` for its line; 0 clears it.
+        private void SetTerminalBRow(int i)
+        {
+            if (i < 0 || i >= m_BoardRows.Count)
+                return;
+            SetLineTerminalB(m_BoardRows[i].line, m_BoardRows[i].stop);
+        }
+
+        private void ClearTerminalBRow(int i)
+        {
+            if (i < 0 || i >= m_BoardRows.Count)
+                return;
+            ClearLineTerminalB(m_BoardRows[i].line);
+        }
+
+        // Give one board row's stop a scheduled layover of `minutes` for its line; 0 clears it.
         // Guarded to TIMETABLED lines only: CleanUninstall iterates the TimetableSchedule query, so a LineLayover on an
         // untimetabled line would be unreachable save residue (same reasoning as SetLineTerminus's guard) — and the
         // stop board does list untimetabled lines, so the guard is load-bearing, not belt-and-braces.
@@ -288,18 +310,55 @@ namespace TransitTimetables
             else EntityManager.AddComponentData(line, lay);
         }
 
-        // Point a timetabled line's terminus at a stop it serves. No-op if the line has no timetable or already points there.
+        // Point a timetabled line's Terminal A at a stop it serves. A and B may never identify the same stop.
         private void SetLineTerminus(Entity line, Entity stop)
         {
-            m_UiDirty = true;   // terminus moved: the board's offsets and the star change immediately
             if (line == Entity.Null || stop == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
+                return;
+            if (!EntityManager.Exists(stop) || !EntityManager.HasComponent<BoardingVehicle>(stop)
+                || WaypointForStop(line, stop) == Entity.Null)
+                return;
+            if (SecondaryTerminalStop(line) == stop)
                 return;
             TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
             if (sch.m_TerminusStop != stop)
             {
                 sch.m_TerminusStop = stop;
                 EntityManager.SetComponentData(line, sch);
+                m_UiDirty = true;
             }
+        }
+
+        // Terminal B is optional and uses the same stop-selection mechanism as A. It is stored only when configured;
+        // clearing removes the sibling component entirely, while Entity.Null remains equivalent for loaded data.
+        private void SetLineTerminalB(Entity line, Entity stop)
+        {
+            if (line == Entity.Null || stop == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
+                return;
+            if (!EntityManager.Exists(stop) || !EntityManager.HasComponent<BoardingVehicle>(stop)
+                || WaypointForStop(line, stop) == Entity.Null)
+                return;
+            TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
+            if (!LineTerminalSelection.CanConfigureSecondary(EffectiveTerminalStop(line, sch), stop))
+                return;
+
+            LineTerminalB terminalB = new LineTerminalB { m_Stop = stop };
+            if (EntityManager.HasComponent<LineTerminalB>(line))
+            {
+                if (EntityManager.GetComponentData<LineTerminalB>(line).m_Stop == stop)
+                    return;
+                EntityManager.SetComponentData(line, terminalB);
+            }
+            else EntityManager.AddComponentData(line, terminalB);
+            m_UiDirty = true;
+        }
+
+        private void ClearLineTerminalB(Entity line)
+        {
+            if (line == Entity.Null || !EntityManager.Exists(line) || !EntityManager.HasComponent<LineTerminalB>(line))
+                return;
+            EntityManager.RemoveComponent<LineTerminalB>(line);
+            m_UiDirty = true;
         }
 
         private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
@@ -372,7 +431,8 @@ namespace TransitTimetables
             m_SelTtFleetB.Update();
             m_SelTtNextB.Update();
             m_SelTtRealInfoB.Update();
-            m_SelTtTerminusB.Update();
+            m_SelTtTerminusBinding.Update();
+            m_SelTtTerminalBBinding.Update();
             m_SelTtLayoverB.Update();
             m_SelTtLayoverMinB.Update();
             m_SelVehInfoB.Update();
@@ -460,6 +520,7 @@ namespace TransitTimetables
                 // Same rule as the departure prediction below: report nothing rather than something untrue.
                 m_SelTtRealInfo = s.Enabled ? BuildRealInfo(sel, dur, um) : "";
                 m_SelTtTerminus = TerminusState(sel, sch);
+                m_SelTtTerminalB = TerminalBState(sel, sch);
                 m_SelTtLayover = LayoverState(sel, sch, out m_SelTtLayoverMin);
                 Entity term = TerminusWaypoint(sel, sch);
                 // No departure predictions while the master switch is off — buses run vanilla, so posting scheduled
@@ -471,6 +532,7 @@ namespace TransitTimetables
                 m_SelTtEnabled = false;
                 m_SelTtFirst = 300; m_SelTtPeak = 8; m_SelTtOffPeak = 12; m_SelTtNight = 30;
                 m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = ""; m_SelTtRealInfo = ""; m_SelTtTerminus = 0;
+                m_SelTtTerminalB = 0;
                 m_SelTtLayover = 0; m_SelTtLayoverMin = 0;
                 m_SelCustomPeakEnabled = false; m_SelCustomPeakInterval = 5;
                 m_SelCustomPeakStart1 = 7; m_SelCustomPeakEnd1 = 9; m_SelCustomPeakStart2 = 16; m_SelCustomPeakEnd2 = 18;
@@ -571,8 +633,8 @@ namespace TransitTimetables
                 CollectAllStationStops(subs[i].m_SubObject, depth + 1);
         }
 
-        // JSON: [{ "n": <lineNumber>, "tt": <bool>, "term": <bool>, "d": "<HH:MM, HH:MM, ...>" }, ...]
-        // term = this stop is the line's EFFECTIVE terminus (explicit m_TerminusStop, else the first-stop fallback
+        // JSON: [{ "n": <lineNumber>, "tt": <bool>, "term": <bool>, "termB": <bool>, "d": "..." }, ...]
+        // term = this stop is the line's EFFECTIVE Terminal A (explicit m_TerminusStop, else the first-stop fallback
         // that the dispatch system actually holds/retires at) — matches TerminusWaypoint below.
         private string BuildStopBoard(TransitTimetablesSetting s, int nowMin)
         {
@@ -613,8 +675,9 @@ namespace TransitTimetables
                 bool tt = hasSched && sch.m_Enabled;
                 string dep = "";
                 bool term = false;
+                bool termB = false;
                 bool est = false;
-                int lay = 0;        // this row's stop is its line's active layover ("Terminus B"): X minutes
+                int lay = 0;        // this row's stop is its line's active scheduled layover: X minutes
                 string arr = "";    // ...and these are its pre-layover arrivals (departures = the ordinary dep list)
                 bool layOff = false; // a layover is SET on this stop but the dispatch dropped it (inactive)
                 if (tt)
@@ -624,6 +687,10 @@ namespace TransitTimetables
                     // waypoint) — where the dispatch actually holds/retires vehicles.
                     Entity termStop = terminusWp != Entity.Null && EntityManager.HasComponent<Connected>(terminusWp)
                         ? EntityManager.GetComponentData<Connected>(terminusWp).m_Connected : Entity.Null;
+                    Entity activeTerminalBStop = TerminalBState(line, sch) == 1
+                        ? SecondaryTerminalStop(line) : Entity.Null;
+                    bool terminalBInSelectedStation = activeTerminalBStop != Entity.Null
+                        && m_SelStops.Contains(activeTerminalBStop);
                     // If the line already terminates at ANOTHER platform of the SAME selected station, re-anchor this
                     // row to THAT platform. A two-direction rail/metro line uses two platforms, and sub-object order may
                     // attach the row to the non-terminus one — which would drop the star and offer a "Set as terminus"
@@ -637,7 +704,10 @@ namespace TransitTimetables
                     Entity stopWp = WaypointForStop(line, stop);
                     dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin, out est);
                     term = termStop != Entity.Null && termStop == stop;
-                    // Layover row ("Terminus B"): only when THIS stop is the line's ACTIVE layover — TryActiveLayover
+                    // When A and B are different platforms inside one selected station, the existing one-row-per-line
+                    // rule re-anchors the row to A. Still expose B on that row so it remains visible and clearable.
+                    termB = activeTerminalBStop == stop || (term && terminalBInSelectedStation);
+                    // Layover row: only when THIS stop is the line's ACTIVE layover — TryActiveLayover
                     // applies the dispatch's own validity rules, so the board can never advertise a layover the
                     // dispatch has dropped (deleted stop, edited route, or the terminus fallback landing on it).
                     // The dep list above is already the DEPARTURES (the posted offset includes X); the arrivals come
@@ -669,6 +739,7 @@ namespace TransitTimetables
                 if (nm != null) sb.Append(",\"nm\":\"").Append(JsonEscape(nm)).Append('"');
                 sb.Append(",\"tt\":").Append(tt ? "true" : "false")
                   .Append(",\"term\":").Append(term ? "true" : "false")
+                  .Append(",\"termB\":").Append(termB ? "true" : "false")
                   .Append(",\"est\":").Append(est ? "true" : "false");    // times derived from the game's estimate, not measured
                 if (lay > 0)
                 {
@@ -771,7 +842,35 @@ namespace TransitTimetables
             return 0;
         }
 
-        // The line's terminus waypoint: chosen stop's waypoint, else the first stop's waypoint.
+        // Optional Terminal B state mirrors the dispatch resolver:
+        //   0 absent, 1 active, 2 deleted/off-route/unboardable, 3 duplicates effective Terminal A.
+        private int TerminalBState(Entity line, TimetableSchedule sch)
+        {
+            Entity terminalB = SecondaryTerminalStop(line);
+            if (terminalB == Entity.Null)
+                return 0;
+            if (!EntityManager.Exists(terminalB) || !EntityManager.HasComponent<BoardingVehicle>(terminalB)
+                || WaypointForStop(line, terminalB) == Entity.Null)
+                return 2;
+            return LineTerminalSelection.CanConfigureSecondary(EffectiveTerminalStop(line, sch), terminalB) ? 1 : 3;
+        }
+
+        private Entity SecondaryTerminalStop(Entity line)
+        {
+            if (line == Entity.Null || !EntityManager.HasComponent<LineTerminalB>(line))
+                return Entity.Null;
+            LineTerminalB terminalB = EntityManager.GetComponentData<LineTerminalB>(line);
+            return LineTerminalSelection.SecondaryTerminal(terminalB);
+        }
+
+        private Entity EffectiveTerminalStop(Entity line, TimetableSchedule sch)
+        {
+            Entity wp = TerminusWaypoint(line, sch);
+            return wp != Entity.Null && EntityManager.HasComponent<Connected>(wp)
+                ? EntityManager.GetComponentData<Connected>(wp).m_Connected : Entity.Null;
+        }
+
+        // The line's Terminal A waypoint: chosen stop's waypoint, else the first stop's waypoint.
         private Entity TerminusWaypoint(Entity line, TimetableSchedule sch)
         {
             if (sch.m_TerminusStop != Entity.Null)
