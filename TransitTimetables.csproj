@@ -68,6 +68,11 @@
 		<None Include="$(ModTargetsFile)" Link="Properties\Mod.targets" />
 	</ItemGroup>
 
+	<!-- The dependency-free timing-math tests have their own project and must not be compiled into the mod. -->
+	<ItemGroup>
+		<Compile Remove="Tests\**\*.cs" />
+	</ItemGroup>
+
 	<!-- UI BUILD INTEGRATION: the toolchain's DeployWIP target does RemoveDir on the deploy folder then copies ONLY
 	     the C# output; webpack emits <mod.id>.mjs straight into that same deploy folder. Run the UI build AFTER
 	     DeployWIP so the .mjs is always regenerated into the deployed/published mod — otherwise a plain `dotnet build`

@@ -20,8 +20,10 @@ namespace TransitTimetables
         public ushort m_PeakInterval;
         public ushort m_OffPeakInterval;
         public ushort m_NightInterval;
-        // The stop the player designated as this line's terminus: the schedule anchor, the hold point, and where a
-        // retiring vehicle finishes its loop before returning to the depot. Entity.Null = fall back to the first stop.
+        // The stop the player designated as this line's PRIMARY terminus (Terminal A): the schedule origin and where a
+        // retiring vehicle finishes its loop before returning to the depot. Entity.Null = fall back
+        // to the first stop. Optional Terminal B data lives in the separate, versioned LineTerminalB component so this
+        // shipped serialization layout never changes.
         public Entity m_TerminusStop;
 
         public void Serialize<TWriter>(TWriter writer) where TWriter : IWriter
@@ -53,6 +55,7 @@ namespace TransitTimetables
             m_PeakInterval = 8,
             m_OffPeakInterval = 12,
             m_NightInterval = 30,
+            m_TerminusStop = Entity.Null,
         };
     }
 }

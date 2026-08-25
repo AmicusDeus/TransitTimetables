@@ -3,7 +3,8 @@ using Unity.Entities;
 
 namespace TransitTimetables
 {
-    // A scheduled LAYOVER at one player-chosen mid-route stop ("Terminus B"): the vehicle departs that stop at its
+    // A scheduled LAYOVER at one player-chosen mid-route stop (called "Terminus B" by the legacy UI): the vehicle
+    // departs that stop at its
     // SCHEDULED arrival plus m_HoldMinutes, and every later stop's posted time carries the same shift. Because the
     // departure is anchored to the scheduled arrival (not the actual one), the wait itself is variable: an on-time
     // vehicle waits the full X, a late one only the remainder, and a vehicle more than X late leaves as soon as
@@ -11,12 +12,13 @@ namespace TransitTimetables
     //
     // This is deliberately NOT a second departure grid. One closed loop with a fixed vehicle set must depart both
     // ends at the same rate or vehicles pile up at one end without bound, so B inherits A's headway by construction
-    // and only the phase (the arrival offset + X) differs. The stop stays an ORDINARY intermediate stop to the rest
-    // of the mod — never isTerminus — which is what routes the wait through the existing m_VehStopHold banking and
-    // keeps it OUT of the measured loop (a layover is a chosen wait, not the route getting slower). The fleet math
-    // is the one place that must ADD it: the cycle genuinely is X minutes longer.
+    // and only the phase (the arrival offset + X) differs. Layover identity alone does not make the stop a schedule
+    // origin; every non-A hold still goes through m_VehStopHold banking and stays OUT of the measured travel time
+    // (a layover is a chosen wait, not the route getting slower). The fleet math is the one place that must ADD it:
+    // the cycle genuinely is X minutes longer.
     //
-    // A SEPARATE sibling component — never grow the shipped TimetableSchedule (adding a field to a shipped
+    // This is dwell configuration, not the optional LineTerminalB timing-point identity. A SEPARATE sibling component
+    // — never grow the shipped TimetableSchedule (adding a field to a shipped
     // ISerializable breaks every save). Leading version byte so THIS one can gain fields later behind a version
     // gate, the same growth path LineMeasuredTravel/CustomPeakSchedule follow. Lives on the LINE entity, not the
     // stop: a stop's boarding slot is shared across lines, and the layover is one line's choice.
