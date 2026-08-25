@@ -197,15 +197,18 @@ namespace TransitTimetables
         // the [SelfTest] cadence — one WARN is a signal, one every 8 frames is noise.
         private uint m_LastClampWarn;
 
-        // PER-VEHICLE SLOT (issue #4): the sim FRAME at which each vehicle is scheduled to depart the TERMINUS on its
-        // current run. Holding a bus to ITS slot (shifted by each stop's offset) — rather than to "the next slot after
-        // now" — means a bus that falls slightly behind rides its own slot LATE instead of being bumped to the next
-        // cycle and stranded for a whole interval. A frame (not a minute) so comparisons are monotonic across midnight.
+        // PER-VEHICLE SLOT (issue #4): the sim FRAME at which each vehicle is scheduled to depart the timing point where
+        // its current run was anchored. Normally that is Terminal A (offset zero); a slotless mid-route vehicle may now
+        // anchor at Terminal B, still claiming an entry from A's ONE timetable grid. Holding a bus to ITS slot (shifted
+        // by the offset from that origin) means a late bus rides its own slot instead of being bumped a whole interval.
         // Keyed by vehicle Entity (globally unique); pruned each tick against m_LiveVehScratch so despawned buses drop.
         private readonly Dictionary<Entity, uint> m_RunSlotFrame = new Dictionary<Entity, uint>();
-        // WHICH POSTED ENTRY each vehicle is running, as an absolute schedule minute. A sibling of m_RunSlotFrame,
-        // written only on the terminus "asg" path, and read only to stop two vehicles of one line being handed the
-        // SAME departure (issue #16).
+        // Cumulative posted offset of the timing point represented by m_RunSlotFrame. Missing means zero for full
+        // compatibility with Terminal-A-only runs and transient state created by older versions.
+        private readonly Dictionary<Entity, int> m_RunSlotOriginOffset = new Dictionary<Entity, int>();
+        // WHICH Terminal-A-grid entry each vehicle is running, as an absolute schedule minute. A sibling of
+        // m_RunSlotFrame, written when either timing point anchors a slotless vehicle, and read to stop two vehicles of
+        // one line being handed the SAME departure (issue #16).
         //
         // Why a second dictionary instead of comparing m_RunSlotFrame values: two vehicles assigned to the same
         // posted minute do NOT get the same frame. Each is assigned on a different 8-frame tick, so their slot
@@ -216,7 +219,11 @@ namespace TransitTimetables
         //
         // Catch-up slots are deliberately NOT recorded: they are off-grid by construction (frame + cuDwell), not a
         // posted entry, and that path already self-de-duplicates through m_LastSlotFrame.
-        private readonly Dictionary<Entity, int>  m_RunSlotMinute = new Dictionary<Entity, int>();
+        private readonly Dictionary<Entity, long> m_RunSlotMinute = new Dictionary<Entity, long>();
+        // Runtime-only clock-day epoch for canonical slot ownership. ScheduleMath intentionally returns minutes around
+        // the current midnight (-10, 1430, 1440, ...); this counter makes equivalent representations compare equal.
+        private int m_ScheduleDay;
+        private int m_LastScheduleClockMinute = -1;
         private readonly HashSet<Entity> m_LiveVehScratch = new HashSet<Entity>();
 
         // Minimum stop dwell (minutes) for a bus that arrives ON its slot or LATE, so it still boards/offloads instead
@@ -484,6 +491,11 @@ namespace TransitTimetables
 
             uint frame = m_Sim.frameIndex;
             int nowMin = (int)(m_Time.normalizedTime * 1440f) % 1440;
+            if (m_LastScheduleClockMinute >= 0
+                && nowMin < m_LastScheduleClockMinute
+                && m_LastScheduleClockMinute - nowMin > 720)
+                m_ScheduleDay++;
+            m_LastScheduleClockMinute = nowMin;
 
             // Runtime frame<->minute scale (vanilla 262144 frames/day unless a slow-time mod stretches the day). One
             // consistent snapshot per tick. On a real day-length change, drop the per-vehicle slots that were scaled by
@@ -491,7 +503,14 @@ namespace TransitTimetables
             m_Fpm = m_Timebase.FramesPerMinute;
             m_Um = m_Timebase.UnitMinutes;
             uint tbGen = m_Timebase.RegimeGeneration;
-            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); m_RunSlotMinute.Clear(); m_LastSlotFrame.Clear(); }
+            if (tbGen != m_TimebaseGen)
+            {
+                m_TimebaseGen = tbGen;
+                m_RunSlotFrame.Clear();
+                m_RunSlotOriginOffset.Clear();
+                m_RunSlotMinute.Clear();
+                m_LastSlotFrame.Clear();
+            }
 
             // Clean-uninstall button (Options): one-shot wipe of every mod component + mutation, then bail this tick.
             // Runs regardless of the master switch, so a paused mod can still be cleaned out.
@@ -687,7 +706,7 @@ namespace TransitTimetables
                         bool measuredNow = s.ProvisionRealFleet && haveMeasurement;
                         float fleetUnits = measuredNow
                             ? durUnits * LineCorrection(line, durUnits, forFleet: true) : durUnits;
-                        // SCHEDULED LAYOVER ("Terminus B"): the cycle genuinely IS X minutes longer, so holding the
+                        // SCHEDULED LAYOVER: the cycle genuinely IS X minutes longer, so holding the
                         // same headway needs ~ceil(X/headway) more vehicles — added HERE, as minutes at the call site,
                         // and deliberately NOWHERE upstream. The measured loop must never contain X (a layover is a
                         // chosen wait, not the route getting slower — the m_VehStopHold banking subtracts it), and
@@ -807,10 +826,14 @@ namespace TransitTimetables
                     }
                 }
 
-                // (3) terminus = timing point + retirement anchor (player-chosen stop, or the first stop)
+                // (3) Terminal A = schedule origin + retirement anchor (player-chosen stop, or the first stop).
                 FindTerminus(line, sch, out Entity terminusStop, out Entity terminusWaypoint);
+                // Optional Terminal B is a second timing point on the SAME timetable grid. Invalid, missing, or
+                // duplicate configuration silently reduces to the historical Terminal-A-only behavior.
+                bool hasTerminalB = TryFindSecondaryTerminal(line, terminusStop, out Entity terminalBStop, out Entity terminalBWaypoint);
+                if (!hasTerminalB) { terminalBStop = Entity.Null; terminalBWaypoint = Entity.Null; }
 
-                // (3+) scheduled layover ("Terminus B"), when set and still usable (see TryActiveLayover). Resolved
+                // (3+) scheduled layover, when set and still usable (see TryActiveLayover). Resolved
                 // once per tick and threaded through: ForceStops must pull vehicles into it even with no demand
                 // (an empty stop is otherwise rolled past and never enters Boarding, so X would silently do nothing),
                 // and HoldAllStops folds X into the offset walk at and after the stop.
@@ -827,7 +850,7 @@ namespace TransitTimetables
                 // where nobody boards or alights — ALWAYS at the terminus (skipping it strands the whole schedule), and
                 // at every stop when the player opts in. A skipped stop never enters Boarding, so the hold below can't
                 // touch it and the bus rolls on early. See ForceStops.
-                int forcedStops = ForceStops(line, terminusWaypoint, layoverWaypoint, s.StopAtEveryStop);
+                int forcedStops = ForceStops(line, terminusWaypoint, terminalBWaypoint, layoverWaypoint, s.StopAtEveryStop);
 
                 // (3a) FULL TIMETABLE: hold EACH stop's boarding bus to that stop's scheduled departure — the terminus
                 // schedule shifted by the stop's cumulative offset from the terminus (offset 0 at the terminus).
@@ -876,7 +899,8 @@ namespace TransitTimetables
                                  $"rej={rej} stops={CountStops(line)} n={loopN} compat={(s.RealisticTripsCompat ? 1 : 0)}");
                 }
 
-                HoldAllStops(line, s, sch, customSch, sched, terminusStop, terminusWaypoint, layoverStop, layoverMinutes, frame, nowMin, curInterval, diagLog);
+                HoldAllStops(line, s, sch, customSch, sched, terminusStop, terminusWaypoint, terminalBStop,
+                    layoverStop, layoverMinutes, frame, nowMin, curInterval, diagLog);
 
                 // (3b) SLOT-COUPLED DRAIN: shed surplus buses at the terminus WITHOUT skipping departures.
                 //
@@ -1125,6 +1149,7 @@ namespace TransitTimetables
             PruneToLive(m_RampSince, m_LiveScratch, m_StaleScratch);
             // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
             PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
+            PruneToLive(m_RunSlotOriginOffset, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_RunSlotMinute, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehTerminusDepart, m_LiveVehScratch, m_StaleScratch);
@@ -1169,7 +1194,7 @@ namespace TransitTimetables
         // stop, 60-frame units) -> schedule minutes. Segment i is the leg from waypoint i to waypoint i+1, and the
         // dwell term mirrors HourlyFleetSystem.ComputeStableDuration / the UI board so posted and held times agree.
         private void HoldAllStops(Entity line, TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity terminusStop,
-            Entity terminusWaypoint, Entity layoverStop, int layoverMinutes, uint frame, int nowMin, int interval, bool diagLog)
+            Entity terminusWaypoint, Entity terminalBStop, Entity layoverStop, int layoverMinutes, uint frame, int nowMin, int interval, bool diagLog)
         {
             // Outside the line's operating window (day-only at night, night-only by day, or a degenerate EMPTY window
             // like NightStart==NightEnd) -> don't hold or force-depart anything; let it run vanilla headway instead of
@@ -1292,7 +1317,7 @@ namespace TransitTimetables
             // maximum, so one bad value corrupts the whole route suffix). The ladder above replaces both: one measured
             // number per line, the estimate only for shape, and the residual forced back to zero at the terminus.
             float offUnits = 0f;
-            // SCHEDULED LAYOVER ("Terminus B") accumulator: 0 for every stop before B, X at B and at every stop after,
+            // SCHEDULED LAYOVER accumulator: 0 before its stop, X there and at every stop after,
             // back to the grid (+0) at the terminus because the walk restarts there. ADDED AS ITS OWN MINUTES TERM,
             // never folded into offUnits — offUnits is multiplied by shrinkScale below, so a player-set layover would
             // silently shrink whenever the line beats its estimate. Incremented at the TOP of B's iteration so B's own
@@ -1348,7 +1373,12 @@ namespace TransitTimetables
                         && !m_ArrivedFrame.ContainsKey(bveh))
                         m_ArrivedFrame[bveh] = frame;
                     if (inService)
-                        HoldStop(s, sch, customSch, sched, line, stop, frame, nowMin, offMin, stop == terminusStop, layAtThis, lineVehicles, lapServed, diag);
+                    {
+                        bool isPrimaryTerminal = stop == terminusStop;
+                        bool isSecondaryTerminal = terminalBStop != Entity.Null && stop == terminalBStop;
+                        HoldStop(s, sch, customSch, sched, line, stop, frame, nowMin, offMin,
+                            isPrimaryTerminal, isSecondaryTerminal, layAtThis, lineVehicles, lapServed, diag);
+                    }
                 }
                 if (diag != null && !boarding)
                     diag.Append(" [").Append(j).Append(":off").Append(offMin).Append(']');
@@ -1389,7 +1419,7 @@ namespace TransitTimetables
         // pushed to 10:40) it reads 10:40, and a third bus asking about 10:20 is told it is free — duplicating A.
         // It is also load-bearing for the catch-up detector, whose write can regress it to a past frame. One field,
         // two contracts, is how the measurement-cliff latch happened.
-        private bool SlotMinuteClaimed(Entity self, int minute, HashSet<Entity> lineVehicles)
+        private bool SlotMinuteClaimed(Entity self, long minute, HashSet<Entity> lineVehicles)
         {
             if (lineVehicles == null)
                 return false;
@@ -1397,10 +1427,70 @@ namespace TransitTimetables
             {
                 if (other == self)
                     continue;
-                if (m_RunSlotMinute.TryGetValue(other, out int owned) && owned == minute)
+                if (m_RunSlotMinute.TryGetValue(other, out long owned) && owned == minute)
                     return true;
             }
             return false;
+        }
+
+        private enum SlotAssignmentResult
+        {
+            Assigned,
+            Clash,
+            Edge,
+        }
+
+        // Claim the next free entry from Terminal A's single posted grid, viewed at a timing point's route offset.
+        // Terminal B therefore competes for exactly the same m_RunSlotMinute values as A; it cannot create a second
+        // independent schedule or hand the same trip to two vehicles.
+        private SlotAssignmentResult AssignPostedSlot(TransitTimetablesSetting s, TimetableSchedule sch,
+            CustomPeakSchedule customSch, int sched, Entity line, Entity veh, uint frame, int nowMin,
+            int timingPointOffset, int maxInterval, HashSet<Entity> lineVehicles, out uint slotFrame)
+        {
+            int referenceNow = TerminalTimingMath.ScheduleReferenceMinute(nowMin, timingPointOffset);
+            int cand = ScheduleMath.NextDeparture(s, sch, customSch, sched, referenceNow);
+            int firstUntil = TerminalTimingMath.MinutesUntilTimingPoint(cand, timingPointOffset, nowMin);
+            int until = firstUntil;
+            bool free = false;
+            int stepsTaken = 0;
+            long candidateKey = TerminalTimingMath.CanonicalScheduleMinute(cand, m_ScheduleDay);
+            for (; stepsTaken <= kMaxSlotSteps; stepsTaken++)
+            {
+                until = TerminalTimingMath.MinutesUntilTimingPoint(cand, timingPointOffset, nowMin);
+                if (!TerminalTimingMath.CandidateWithinAssignmentWindow(until, maxInterval, stepsTaken)) break;
+                candidateKey = TerminalTimingMath.CanonicalScheduleMinute(cand, m_ScheduleDay);
+                if (!SlotMinuteClaimed(veh, candidateKey, lineVehicles)) { free = true; break; }
+                int next = ScheduleMath.NextDeparture(s, sch, customSch, sched, cand + 1);
+                if (next <= cand) break;
+                cand = next;
+            }
+            if (free)
+            {
+                slotFrame = frame + (uint)(until * m_Fpm);
+                m_RunSlotFrame[veh] = slotFrame;
+                m_RunSlotOriginOffset[veh] = timingPointOffset;
+                m_RunSlotMinute[veh] = candidateKey;
+
+                // m_LastSlotFrame is line-wide catch-up state expressed at Terminal A. Near simulation frame zero the
+                // reconstructed A frame can be negative; using `frame` then is conservative and suppresses, rather than
+                // invents, a duplicate catch-up departure.
+                long baseFrame = (long)slotFrame - (long)(timingPointOffset * (double)m_Fpm);
+                uint claimFrame = baseFrame > 0L ? (uint)baseFrame : frame;
+                if (!m_LastSlotFrame.TryGetValue(line, out uint cur) || claimFrame > cur)
+                    m_LastSlotFrame[line] = claimFrame;
+                return SlotAssignmentResult.Assigned;
+            }
+            if (TerminalTimingMath.CandidateWithinAssignmentWindow(firstUntil, maxInterval, 0))
+            {
+                slotFrame = 0u;
+                return SlotAssignmentResult.Clash;
+            }
+
+            m_RunSlotFrame.Remove(veh);
+            m_RunSlotOriginOffset.Remove(veh);
+            m_RunSlotMinute.Remove(veh);
+            slotFrame = frame;
+            return SlotAssignmentResult.Edge;
         }
 
         // Hold one stop's in-service boarding bus to its scheduled clock departure (the schedule shifted by offMin), or
@@ -1412,9 +1502,11 @@ namespace TransitTimetables
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
         private void HoldStop(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity line, Entity stop, uint frame, int nowMin,
-            int offMin, bool isTerminus, int layoverAtStop, HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
+            int offMin, bool isPrimaryTerminal, bool isSecondaryTerminal, int layoverAtStop,
+            HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
         {
-            string tag = isTerminus ? "T" : "";
+            bool isTimingPoint = isPrimaryTerminal || isSecondaryTerminal;
+            string tag = isPrimaryTerminal ? "A" : isSecondaryTerminal ? "B" : "";
             Entity veh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
             if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
             { diag?.Append(" [off").Append(offMin).Append(tag).Append(":noveh]"); return; }
@@ -1445,7 +1537,7 @@ namespace TransitTimetables
             bool haveSlot = m_RunSlotFrame.TryGetValue(veh, out uint slotFrame);
             string slotSrc = "keep"; // reassigned below on every path; init only to satisfy definite-assignment (catch-up branch)
             bool slotless = false; // bus with no terminus slot yet (spawned mid-route): min-dwell and GO, don't hold (#1/#6)
-            if (isTerminus)
+            if (isPrimaryTerminal)
             {
                 // The terminus is the anchor. (Re)assign the next scheduled departure when the bus has no slot yet, or
                 // has COMPLETED a lap (it is in lapServed) AND its old slot is already past — i.e. it has come round
@@ -1505,6 +1597,7 @@ namespace TransitTimetables
                                 // Depart a min-dwell from NOW (like an on-slot/late bus): a near-future frame, not `frame`.
                                 slotFrame = frame + (uint)(cuDwell * m_Fpm);
                                 m_RunSlotFrame[veh] = slotFrame;
+                                m_RunSlotOriginOffset[veh] = 0;
                                 // DROP any posted-entry claim. A catch-up slot is off-grid by construction, so this
                                 // vehicle no longer owns an entry — and leaving the previous run's claim behind would
                                 // reserve a departure nobody is running, blocking the next bus out of it for a whole
@@ -1565,8 +1658,8 @@ namespace TransitTimetables
                         // too, because NextDeparture tests `t >= nowMinute`, so a successor that begins boarding
                         // while the clock is still inside the departed slot's own minute anchors to the entry just
                         // used. Rare, but the same bug.
-                        int cand = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin);
-                        bool free = false;
+                        SlotAssignmentResult assignment = AssignPostedSlot(s, sch, customSch, sched, line, veh,
+                            frame, nowMin, 0, maxInterval, lineVehicles, out slotFrame);
                         // Bounded walk forward through the grid.
                         //
                         // THE WINDOW HAS TO GROW WITH THE WALK, and the first version of this got it wrong in a way
@@ -1581,26 +1674,11 @@ namespace TransitTimetables
                         // each accepted step buys one more headway, because "you are on the departure after the one
                         // another bus holds" legitimately means waiting that much longer. Still hard-bounded: at most
                         // kMaxSlotSteps extra headways, so this can never become an open-ended wait.
-                        int stepsTaken = 0;
-                        for (; stepsTaken <= kMaxSlotSteps; stepsTaken++)
+                        if (assignment == SlotAssignmentResult.Assigned)
                         {
-                            int u = cand - nowMin;
-                            if (u < 0 || u > maxInterval * (stepsTaken + 1)) break;
-                            if (!SlotMinuteClaimed(veh, cand, lineVehicles)) { untilNext = u; free = true; break; }
-                            int nxt = ScheduleMath.NextDeparture(s, sch, customSch, sched, cand + 1);
-                            if (nxt <= cand) break;   // NextDeparture's own "return first" fallback: stop walking
-                            cand = nxt;
-                        }
-                        if (free)
-                        {
-                            slotFrame = frame + (uint)(untilNext * m_Fpm);
-                            m_RunSlotFrame[veh] = slotFrame;
-                            m_RunSlotMinute[veh] = cand;                 // the entry this vehicle now owns
-                            // Claim this (future) slot so the next bus doesn't read it as missed. Monotonic: never regress.
-                            if (!m_LastSlotFrame.TryGetValue(line, out uint cur) || slotFrame > cur) m_LastSlotFrame[line] = slotFrame;
                             slotSrc = "asg";
                         }
-                        else if (untilNext >= 0 && untilNext <= maxInterval)
+                        else if (assignment == SlotAssignmentResult.Clash)
                         {
                             // CLASH: every entry inside the window is already owned by another vehicle on this line.
                             // Write NOTHING and leave — no slot, no claim, no departure frame. This resolves itself
@@ -1616,9 +1694,6 @@ namespace TransitTimetables
                         else
                         {
                             // No usable slot soon (operating-window edge): don't latch a far/garbage slot — release now.
-                            m_RunSlotFrame.Remove(veh);
-                            m_RunSlotMinute.Remove(veh);
-                            slotFrame = frame;
                             slotSrc = "edge";
                         }
                     }
@@ -1626,10 +1701,28 @@ namespace TransitTimetables
                 else slotSrc = "keep";
                 haveSlot = true;
             }
+            else if (isSecondaryTerminal && TerminalTimingMath.SecondaryShouldAcquireSlot(haveSlot))
+            {
+                // A slotless vehicle may join the ONE line schedule at B. The claimed minute is still an A-grid
+                // departure; offMin merely phases that entry forward to B's posted departure. Existing slots are never
+                // replaced here, so B cannot start a second run or make a late vehicle wait for another headway.
+                SlotAssignmentResult assignment = AssignPostedSlot(s, sch, customSch, sched, line, veh,
+                    frame, nowMin, offMin, maxInterval, lineVehicles, out slotFrame);
+                if (assignment == SlotAssignmentResult.Clash)
+                {
+                    diag?.Append(" [off").Append(offMin).Append(tag).Append(":clash]");
+                    return;
+                }
+                slotSrc = assignment == SlotAssignmentResult.Assigned ? "asgB" : "edgeB";
+                haveSlot = true;
+            }
             else if (haveSlot)
             {
-                // Same run: this stop's scheduled departure is the terminus slot pushed forward by the stop's offset.
-                slotFrame += (uint)(offMin * m_Fpm);
+                // Same run: shift from the timing point where the slot was acquired to this stop. Terminal-A-only
+                // vehicles have no origin entry (or zero), preserving the historical calculation exactly.
+                int originOffset = m_RunSlotOriginOffset.TryGetValue(veh, out int origin) ? origin : 0;
+                int relativeOffset = TerminalTimingMath.OffsetFromSlotOrigin(offMin, originOffset);
+                slotFrame += (uint)(relativeOffset * m_Fpm);
                 slotSrc = "run";
             }
             else
@@ -1660,7 +1753,7 @@ namespace TransitTimetables
             // The POSTED departure moment. Early: its slot. On-slot/late: now (it is already due). Slot-less: now.
             // Boarding time is no longer bought by padding this target — the anchored grace below buys it, which is why
             // there is no longer a min-dwell term here.
-            uint target = (slotless || arrived >= slotFrame) ? arrived : slotFrame;
+            uint target = TerminalTimingMath.DepartureTarget(arrived, slotFrame, !slotless);
             bool dwelling = slotless || arrived >= slotFrame; // already due (not an early-slot hold); excluded from m_VehHeld
 
             long dframes = (long)target - frame;                                    // >0 -> hold/dwell; <=0 -> depart
@@ -1691,17 +1784,26 @@ namespace TransitTimetables
             // holds for X plus its earliness by design — so it gets its own bound term rather than competing with the
             // slack cap. The travel part of the slack is offMin MINUS the layover (offMin at that stop includes X).
             int termBound = maxInterval;
-            if (isTerminus && m_RunSlotMinute.TryGetValue(veh, out int ownedMin))
+            bool hasOwnedMinute = m_RunSlotMinute.TryGetValue(veh, out long ownedMin);
+            if (isTimingPoint && (hasOwnedMinute || layoverAtStop > 0))
             {
-                // Minutes this vehicle is legitimately waiting for the entry it owns, plus the usual rounding slack.
-                int ownedWait = ownedMin - nowMin;
-                if (ownedWait > termBound) termBound = System.Math.Min(ownedWait, maxInterval * (kMaxSlotSteps + 1));
-                termBound += kMaxHoldSlackMinutes;
+                int ownedWait = maxInterval;
+                if (hasOwnedMinute)
+                {
+                    // Minutes this vehicle is legitimately waiting for the entry it owns.
+                    long nowKey = TerminalTimingMath.CanonicalScheduleMinute(nowMin, m_ScheduleDay);
+                    ownedWait = (int)(ownedMin + offMin - nowKey);
+                }
+                // A configured scheduled layover may share Terminal B. It is a legitimate wait on top of the slot
+                // assignment window, just as it is at an ordinary intermediate stop, and must not trip the clamp.
+                // Catch-up slots have no posted-minute claim, so the layover term is applied outside that lookup.
+                termBound = TerminalTimingMath.TimingPointHoldBound(maxInterval, ownedWait, kMaxSlotSteps,
+                    kMaxHoldSlackMinutes, layoverAtStop);
             }
-            int holdBound = isTerminus ? termBound
+            int holdBound = isTimingPoint ? termBound
                 : maxInterval + System.Math.Min(offMin - layoverAtStop, kMaxHoldSlackMinutes) + layoverAtStop;
             bool overrun = until > holdBound;
-            bool hold = dframes > 0 && !overrun;
+            bool hold = TerminalTimingMath.ShouldHold(frame, target, overrun);
             // WARN threshold deliberately left at the OLD bound so residual shape error stays visible in the log even
             // once releases stop: a run of these at early stops means the additive ladder is wrong for that line.
             // The layover term is exempted, or a working layover longer than one headway would log "residual shape
@@ -1722,9 +1824,10 @@ namespace TransitTimetables
                 // Record how long WE are making this vehicle wait here, so MeasureLap can subtract it instead of
                 // discarding the whole lap. Rewritten every tick with the same value (target and arrived are both
                 // fixed for this stop), so re-running cannot double-count; the drain folds it into the lap total when
-                // the vehicle leaves. The terminus hold is excluded because the lap is measured departure-to-arrival
-                // and never contains it. A min-dwell (dwelling) is not our hold — that is the vehicle's own stop.
-                if (!isTerminus && !dwelling && target > arrived) m_VehStopHold[veh] = target - arrived;
+                // the vehicle leaves. Terminal A's hold is excluded because the lap is measured A-departure to
+                // A-arrival and never contains it; B is inside that span, so its recovery hold must be subtracted.
+                // A min-dwell (dwelling) is not our hold — that is the vehicle's own stop.
+                if (!isPrimaryTerminal && !dwelling && target > arrived) m_VehStopHold[veh] = target - arrived;
                 // EARLY -> hold to slot; ON-SLOT/LATE -> hold through the min-dwell. Either way write the target frame
                 // AUTHORITATIVELY (overrides vanilla's unbunching-inflated value); this cannot cut a boarding short —
                 // while held, StopBoarding keeps the bus for a cim walking up (m_MaxBoardingDistance != MaxValue,
@@ -1814,7 +1917,8 @@ namespace TransitTimetables
         // skip-vs-stop. With no demand the flag stays clear and the bus rolls through, so it never enters Boarding and
         // the timetable hold can't act on it (HoldStop early-returns unless Boarding|EnRoute) — the bus then leaves
         // early. We simply OR the flag in ourselves:
-        //   - the TERMINUS is forced UNCONDITIONALLY (a skipped terminus strands the schedule — it is the timing anchor);
+        //   - both configured TERMINALS are forced unconditionally (a skipped timing point cannot recover spacing);
+        //   - the scheduled-layover stop is likewise forced so its configured dwell actually happens;
         //   - every other stop only when `everyStop` (the player's opt-in), which trades a short dwell at empty stops for
         //     an honoured posted time at each one.
         // RequireStop is a TRANSIENT runtime flag: BeginTesting clears it at the start of each boarding test, then the
@@ -1826,7 +1930,7 @@ namespace TransitTimetables
         // stop the game genuinely wants. Scoped to THIS line's own RouteVehicles, so buses of other lines sharing a stop
         // are untouched. (The write also lands on any non-road vehicle on the line, but it is inert there — only
         // TransportCarAISystem reads RequireStop for the skip; trains/ships/planes never skip.) Returns count forced (diag).
-        private int ForceStops(Entity line, Entity terminusWaypoint, Entity layoverWaypoint, bool everyStop)
+        private int ForceStops(Entity line, Entity terminusWaypoint, Entity terminalBWaypoint, Entity layoverWaypoint, bool everyStop)
         {
             if (!EntityManager.HasBuffer<RouteVehicle>(line))
                 return 0;
@@ -1847,13 +1951,18 @@ namespace TransitTimetables
                 bool approachingTerminus = terminusWaypoint != Entity.Null
                     && EntityManager.HasComponent<Target>(veh)
                     && EntityManager.GetComponentData<Target>(veh).m_Target == terminusWaypoint;
-                // The layover stop ("Terminus B") is forced for the same reason the terminus is: with no boarding
+                // Terminal B is also a timing point: every supported vehicle must enter Boarding there so HoldStop can
+                // apply the line's phased slot even when the stop has no passenger demand.
+                bool approachingTerminalB = terminalBWaypoint != Entity.Null
+                    && EntityManager.HasComponent<Target>(veh)
+                    && EntityManager.GetComponentData<Target>(veh).m_Target == terminalBWaypoint;
+                // The scheduled-layover stop is forced for the same reason as a timing point: with no boarding
                 // demand vanilla rolls past it, the vehicle never enters Boarding, and the scheduled layover silently
                 // does not happen. Marking a stop as the layover IS the player asking every vehicle to call there.
                 bool approachingLayover = layoverWaypoint != Entity.Null
                     && EntityManager.HasComponent<Target>(veh)
                     && EntityManager.GetComponentData<Target>(veh).m_Target == layoverWaypoint;
-                if (!(everyStop || approachingTerminus || approachingLayover))
+                if (!(everyStop || approachingTerminus || approachingTerminalB || approachingLayover))
                     continue;
                 forced++;
                 if ((pt.m_State & PublicTransportFlags.RequireStop) == 0)
@@ -1926,8 +2035,9 @@ namespace TransitTimetables
 
         // Clean uninstall (Options button): wipe every trace of the mod from the current save. For each timetabled line
         // revert the mutated vanilla state (restore the unbunching factor, release any held bus, drop the mod-applied
-        // vehicle count) and REMOVE the mod's serialized components (TimetableSchedule, CustomPeakSchedule,
-        // LineMeasuredTravel), then forget all in-memory tracking. After this the save contains no mod data, so the
+        // vehicle count) and REMOVE the mod's serialized components (TimetableSchedule, LineTerminalB,
+        // CustomPeakSchedule, LineMeasuredTravel), then forget all in-memory tracking. After this the save contains no
+        // mod data, so the
         // player can save and remove the mod with zero residue. Structural removes go through an ECB (played back after
         // the read pass). Safe to run with the mod still installed — the lines just go back to plain vanilla.
         private void CleanUninstall(uint frame)
@@ -1948,6 +2058,7 @@ namespace TransitTimetables
                 // genuine player/policy count is preserved. No-op on a line we never touched.
                 m_Fleet.TryHealLeftoverFleetModifier(line);
                 ecb.RemoveComponent<TimetableSchedule>(line);
+                if (EntityManager.HasComponent<LineTerminalB>(line)) ecb.RemoveComponent<LineTerminalB>(line);
                 if (EntityManager.HasComponent<CustomPeakSchedule>(line)) ecb.RemoveComponent<CustomPeakSchedule>(line);
                 if (EntityManager.HasComponent<LineMeasuredTravel>(line)) ecb.RemoveComponent<LineMeasuredTravel>(line);
                 if (EntityManager.HasComponent<LineLayover>(line)) ecb.RemoveComponent<LineLayover>(line);
@@ -1960,7 +2071,8 @@ namespace TransitTimetables
             m_LastFleet.Clear(); m_PendingRetire.Clear(); m_LapServed.Clear(); m_LapFront.Clear();
             m_LineLoopEma.Clear(); m_LineLoopSamples.Clear(); m_LineLoopMin.Clear(); m_LineRejectStreak.Clear();
             m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear(); m_RampSince.Clear();
-            m_RunSlotFrame.Clear(); m_RunSlotMinute.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
+            m_RunSlotFrame.Clear(); m_RunSlotOriginOffset.Clear(); m_RunSlotMinute.Clear();
+            m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
             m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedArrival.Clear(); m_PostedFleet.Clear();
             m_PostedTerminusArrival.Clear();
             Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
@@ -2234,9 +2346,8 @@ namespace TransitTimetables
         // when is it due at its next stop".
         //
         // Computed HERE rather than in the UI on purpose. The scheduled time at a stop is the vehicle's slot shifted
-        // by that stop's posted offset, which is exactly what HoldStop does (`slotFrame += offMin * m_Fpm`) before it
-        // decides whether to hold. A second copy of that expression in the panel is how the printed board once came
-        // to disagree with the vehicles by 45 minutes, so the panel reads this and never re-derives it.
+        // by that stop's offset from the timing point where the slot was acquired, exactly as HoldStop does. A second
+        // copy in the panel is how the printed board once disagreed with vehicles, so the panel reads this result.
         //
         // Returns false when the vehicle has no slot yet. That is the mid-route join case: the game spawns from the
         // depot onto the nearest stop, and such a vehicle deliberately runs unscheduled until it first reaches the
@@ -2279,7 +2390,9 @@ namespace TransitTimetables
                 if (m_PostedTerminusArrival.TryGetValue(wp, out int termArr)) offMin = termArr;
                 else if (m_PostedArrival.TryGetValue(wp, out int layArr)) offMin = layArr;
             }
-            long sched = (long)slotFrame + (long)(offMin * m_Fpm);
+            int originOffset = m_RunSlotOriginOffset.TryGetValue(veh, out int origin) ? origin : 0;
+            int relativeOffset = TerminalTimingMath.OffsetFromSlotOrigin(offMin, originOffset);
+            long sched = (long)slotFrame + (long)(relativeOffset * m_Fpm);
             uint frame = m_Sim.frameIndex;
             lateMin = (int)System.Math.Round((frame - (double)sched) / m_Fpm);   // + late, - early
             int nowMin = (int)(m_Time.normalizedTime * 1440f) % 1440;
@@ -2385,7 +2498,39 @@ namespace TransitTimetables
             }
         }
 
-        // Resolve this line's layover ("Terminus B") to a usable (stop, waypoint, minutes) triple. False when there is
+        // Resolve optional Terminal B against the live route. The effective Terminal A is passed in because A may be
+        // the first-stop fallback even when m_TerminusStop is null; comparing only the stored fields would incorrectly
+        // accept the same physical stop as both timing points after a route edit.
+        private bool TryFindSecondaryTerminal(Entity line, Entity primaryStop, out Entity stop, out Entity waypoint)
+        {
+            stop = Entity.Null;
+            waypoint = Entity.Null;
+            if (!EntityManager.HasComponent<LineTerminalB>(line))
+                return false;
+
+            LineTerminalB configured = EntityManager.GetComponentData<LineTerminalB>(line);
+            Entity candidate = LineTerminalSelection.SecondaryTerminal(configured);
+            if (!LineTerminalSelection.CanConfigureSecondary(primaryStop, candidate) || !EntityManager.Exists(candidate)
+                || !EntityManager.HasComponent<BoardingVehicle>(candidate)
+                || !EntityManager.HasBuffer<RouteWaypoint>(line))
+                return false;
+
+            DynamicBuffer<RouteWaypoint> waypoints = EntityManager.GetBuffer<RouteWaypoint>(line, isReadOnly: true);
+            for (int j = 0; j < waypoints.Length; j++)
+            {
+                Entity wp = waypoints[j].m_Waypoint;
+                if (EntityManager.HasComponent<Connected>(wp)
+                    && EntityManager.GetComponentData<Connected>(wp).m_Connected == candidate)
+                {
+                    stop = candidate;
+                    waypoint = wp;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Resolve this line's scheduled layover to a usable (stop, waypoint, minutes) triple. False when there is
         // nothing usable: no component, zero minutes, the stop deleted or no longer boardable / on the route — the same
         // silent-fallback validity rules FindTerminus applies to the terminus itself — or the stop IS the effective
         // terminus. That last one matters: HoldStop branches on stop == terminusStop, and the terminus branch never
